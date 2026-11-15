@@ -1,0 +1,35 @@
+[package]
+name = "rsql"
+version = "0.1.0"
+edition = "2021"
+authors = ["Huy <dev@amsoftware.com.vn>"]
+description = "Next-Generation PostgreSQL and Amazon Redshift CLI (psql clone with Lakehouse & legacy compatibility)"
+license = "MIT"
+
+[dependencies]
+# CLI & Args
+clap = { version = "4.5", features = ["derive", "env"] }
+
+# Async runtime & DB
+tokio = { version = "1.43", features = ["full"] }
+tokio-postgres = { version = "0.7", features = ["with-chrono-0_4"] }
+native-tls = "0.2"
+postgres-native-tls = "0.5"
+
+# REPL, Terminal & UI
+rustyline = { version = "19.0", features = ["derive", "with-file-history"] }
+crossterm = "0.28"
+comfy-table = "7.1"
+colored = "3.0"
+rpassword = "7.3"
+dirs = "6.0"
+
+# Data formatting & serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+csv = "1.3"
+chrono = "0.4"
+
+# Error handling
+anyhow = "1.0"
+thiserror = "2.0"
