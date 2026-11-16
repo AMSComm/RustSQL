@@ -139,3 +139,23 @@ fn test_markdown_formatting() {
     assert!(output.contains("| 1 | Alice | t |"));
     assert!(output.contains("| 2 | Bob | f |"));
 }
+
+#[test]
+fn test_visual_lines_calculation() {
+    use rsql::output::pager::calculate_visual_lines;
+
+    // 3 short lines on width 80 -> 3 visual lines
+    let content = "line 1\nline 2\nline 3";
+    assert_eq!(calculate_visual_lines(content, 80), 3);
+
+    // 1 long line of 160 chars on width 80 -> 2 visual lines
+    let long_line = "a".repeat(160);
+    assert_eq!(calculate_visual_lines(&long_line, 80), 2);
+
+    // 1 line of 81 chars on width 80 -> 2 visual lines
+    let line_81 = "a".repeat(81);
+    assert_eq!(calculate_visual_lines(&line_81, 80), 2);
+
+    // Empty content -> 0 lines
+    assert_eq!(calculate_visual_lines("", 80), 0);
+}
