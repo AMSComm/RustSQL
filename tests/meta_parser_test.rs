@@ -1,4 +1,5 @@
-use rsql::meta::{parse_meta_command, MetaCommand};
+use rsql::meta::{handle_pset, parse_meta_command, AppState, MetaCommand};
+use rsql::output::OutputFormat;
 
 #[test]
 fn test_parse_meta_commands() {
@@ -7,8 +8,11 @@ fn test_parse_meta_commands() {
     assert!(matches!(parse_meta_command("\\?"), Some(MetaCommand::HelpGeneral)));
     assert!(matches!(parse_meta_command("\\l"), Some(MetaCommand::ListDatabases)));
     assert!(matches!(parse_meta_command("\\list"), Some(MetaCommand::ListDatabases)));
-    assert!(matches!(parse_meta_command("\\x"), Some(MetaCommand::ToggleExpanded)));
-    assert!(matches!(parse_meta_command("\\timing"), Some(MetaCommand::ToggleTiming)));
+    assert!(matches!(parse_meta_command("\\x"), Some(MetaCommand::ToggleExpanded(None))));
+    assert!(matches!(parse_meta_command("\\timing"), Some(MetaCommand::ToggleTiming(None))));
+    assert!(matches!(parse_meta_command("\\t"), Some(MetaCommand::ToggleTuplesOnly(None))));
+    assert!(matches!(parse_meta_command("\\t on"), Some(MetaCommand::ToggleTuplesOnly(Some(true)))));
+    assert!(matches!(parse_meta_command("\\t off"), Some(MetaCommand::ToggleTuplesOnly(Some(false)))));
     assert!(matches!(parse_meta_command("\\conninfo"), Some(MetaCommand::ConnInfo)));
     assert!(matches!(parse_meta_command("\\ds"), Some(MetaCommand::ListDatashares)));
     assert!(matches!(parse_meta_command("\\dex"), Some(MetaCommand::ListExternalTables(None))));
@@ -45,4 +49,37 @@ fn test_parse_meta_commands() {
     } else {
         panic!("Expected \\c command");
     }
+}
+
+#[test]
+fn test_pset_options() {
+    let mut state = AppState::default();
+
+    // Test \pset format tsv
+    handle_pset("format", Some("tsv"), &mut state);
+    assert_eq!(state.format, OutputFormat::Tsv);
+
+    // Test \pset format csv
+    handle_pset("format", Some("csv"), &mut state);
+    assert_eq!(state.format, OutputFormat::Csv);
+
+    // Test \pset null 'NULL'
+    handle_pset("null", Some("'[NULL]'"), &mut state);
+    assert_eq!(state.null_str, "[NULL]");
+
+    // Test \pset null ''
+    handle_pset("null", Some("''"), &mut state);
+    assert_eq!(state.null_str, "");
+
+    // Test \pset tuples_only on
+    handle_pset("tuples_only", Some("on"), &mut state);
+    assert_eq!(state.tuples_only, true);
+
+    // Test \pset tuples_only off
+    handle_pset("tuples_only", Some("off"), &mut state);
+    assert_eq!(state.tuples_only, false);
+
+    // Test \pset fieldsep
+    handle_pset("fieldsep", Some("','"), &mut state);
+    assert_eq!(state.field_sep, ",");
 }

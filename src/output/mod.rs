@@ -14,6 +14,7 @@ pub enum OutputFormat {
     Aligned,
     Expanded,
     Csv,
+    Tsv,
     Json,
     Markdown,
 }
@@ -28,7 +29,12 @@ pub struct QueryResult {
 }
 
 impl QueryResult {
-    pub fn from_rows(rows: &[Row], duration: Duration, command_tag: Option<String>) -> Self {
+    pub fn from_rows(
+        rows: &[Row],
+        duration: Duration,
+        command_tag: Option<String>,
+        null_str: &str,
+    ) -> Self {
         if rows.is_empty() {
             return Self {
                 columns: Vec::new(),
@@ -50,7 +56,7 @@ impl QueryResult {
         for row in rows {
             let mut row_values = Vec::with_capacity(columns.len());
             for i in 0..columns.len() {
-                let val_str = extract_column_string(row, i);
+                let val_str = extract_column_string(row, i, null_str);
                 row_values.push(val_str);
             }
             data_rows.push(row_values);
@@ -70,18 +76,20 @@ impl QueryResult {
         &self,
         format: OutputFormat,
         show_timing: bool,
+        tuples_only: bool,
         use_pager: bool,
     ) -> Result<()> {
         let output = match format {
-            OutputFormat::Aligned => table::format_table(self)?,
+            OutputFormat::Aligned => table::format_table(self, tuples_only)?,
             OutputFormat::Expanded => expanded::format_expanded(self)?,
-            OutputFormat::Csv => csv::format_csv(self)?,
+            OutputFormat::Csv => csv::format_csv(self, !tuples_only)?,
+            OutputFormat::Tsv => csv::format_tsv(self, !tuples_only)?,
             OutputFormat::Json => json::format_json(self)?,
             OutputFormat::Markdown => markdown::format_markdown(self)?,
         };
 
         let mut final_output = output;
-        if show_timing {
+        if show_timing && !tuples_only {
             let timing_str = format!("\nTime: {:.3} ms\n", self.duration.as_secs_f64() * 1000.0);
             final_output.push_str(&timing_str);
         }
@@ -96,57 +104,57 @@ impl QueryResult {
     }
 }
 
-pub fn extract_column_string(row: &Row, idx: usize) -> String {
+pub fn extract_column_string(row: &Row, idx: usize, null_str: &str) -> String {
     // Try string / text / varchar
     if let Ok(v) = row.try_get::<_, Option<String>>(idx) {
-        return v.unwrap_or_else(|| "[NULL]".to_string());
+        return v.unwrap_or_else(|| null_str.to_string());
     }
     // Try i64 / bigint
     if let Ok(v) = row.try_get::<_, Option<i64>>(idx) {
-        return v.map(|x| x.to_string()).unwrap_or_else(|| "[NULL]".to_string());
+        return v.map(|x| x.to_string()).unwrap_or_else(|| null_str.to_string());
     }
     // Try i32 / int / integer
     if let Ok(v) = row.try_get::<_, Option<i32>>(idx) {
-        return v.map(|x| x.to_string()).unwrap_or_else(|| "[NULL]".to_string());
+        return v.map(|x| x.to_string()).unwrap_or_else(|| null_str.to_string());
     }
     // Try i16 / smallint
     if let Ok(v) = row.try_get::<_, Option<i16>>(idx) {
-        return v.map(|x| x.to_string()).unwrap_or_else(|| "[NULL]".to_string());
+        return v.map(|x| x.to_string()).unwrap_or_else(|| null_str.to_string());
     }
     // Try bool / boolean
     if let Ok(v) = row.try_get::<_, Option<bool>>(idx) {
         return v
             .map(|b| if b { "t".to_string() } else { "f".to_string() })
-            .unwrap_or_else(|| "[NULL]".to_string());
+            .unwrap_or_else(|| null_str.to_string());
     }
     // Try f64 / double precision
     if let Ok(v) = row.try_get::<_, Option<f64>>(idx) {
-        return v.map(|x| x.to_string()).unwrap_or_else(|| "[NULL]".to_string());
+        return v.map(|x| x.to_string()).unwrap_or_else(|| null_str.to_string());
     }
     // Try f32 / real
     if let Ok(v) = row.try_get::<_, Option<f32>>(idx) {
-        return v.map(|x| x.to_string()).unwrap_or_else(|| "[NULL]".to_string());
+        return v.map(|x| x.to_string()).unwrap_or_else(|| null_str.to_string());
     }
     // Try chrono NaiveDateTime
     if let Ok(v) = row.try_get::<_, Option<chrono::NaiveDateTime>>(idx) {
         return v
             .map(|dt| dt.to_string())
-            .unwrap_or_else(|| "[NULL]".to_string());
+            .unwrap_or_else(|| null_str.to_string());
     }
     // Try chrono NaiveDate
     if let Ok(v) = row.try_get::<_, Option<chrono::NaiveDate>>(idx) {
         return v
             .map(|d| d.to_string())
-            .unwrap_or_else(|| "[NULL]".to_string());
+            .unwrap_or_else(|| null_str.to_string());
     }
     // Try byte slice
     if let Ok(v) = row.try_get::<_, Option<&[u8]>>(idx) {
         return v
             .map(|b| format!("\\x{}", hex_encode(b)))
-            .unwrap_or_else(|| "[NULL]".to_string());
+            .unwrap_or_else(|| null_str.to_string());
     }
 
-    "[UNSUPPORTED TYPE]".to_string()
+    null_str.to_string()
 }
 
 fn hex_encode(data: &[u8]) -> String {

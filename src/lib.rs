@@ -5,4 +5,5 @@ pub mod dialect;
 pub mod error;
 pub mod meta;
 pub mod output;
+pub mod rc;
 pub mod repl;

@@ -21,7 +21,70 @@ fn test_cli_args_parsing() {
     assert_eq!(args.dbname.unwrap(), "dev");
     assert!(args.expanded);
     assert!(args.csv);
+    assert!(!args.tsv);
+    assert!(!args.no_header);
     assert_eq!(args.command.unwrap(), "SELECT * FROM my_table;");
+}
+
+#[test]
+fn test_cli_tsv_and_no_header_flag() {
+    let args = CliArgs::parse_from(&[
+        "rsql",
+        "--tsv",
+        "--no-header",
+        "-c", "SELECT id, name FROM users;",
+    ]);
+
+    assert!(args.tsv);
+    assert!(!args.csv);
+    assert!(args.no_header);
+    assert_eq!(args.command.unwrap(), "SELECT id, name FROM users;");
+
+    // Test alias -t
+    let args_short_t = CliArgs::parse_from(&[
+        "rsql",
+        "--csv",
+        "-t",
+        "-c", "SELECT 1;",
+    ]);
+    assert!(args_short_t.no_header);
+
+    // Test alias --tuples-only
+    let args_tuples_only = CliArgs::parse_from(&[
+        "rsql",
+        "--csv",
+        "--tuples-only",
+        "-c", "SELECT 1;",
+    ]);
+    assert!(args_tuples_only.no_header);
+}
+
+#[test]
+fn test_cli_no_psqlrc_flag() {
+    let args = CliArgs::parse_from(&[
+        "rsql",
+        "-X",
+        "-c", "SELECT 1;",
+    ]);
+    assert!(args.no_psqlrc);
+
+    let args_long = CliArgs::parse_from(&[
+        "rsql",
+        "--no-psqlrc",
+        "-c", "SELECT 1;",
+    ]);
+    assert!(args_long.no_psqlrc);
+}
+
+#[test]
+fn test_cli_csv_tsv_conflict() {
+    let res = CliArgs::try_parse_from(&[
+        "rsql",
+        "--csv",
+        "--tsv",
+        "-c", "SELECT 1;",
+    ]);
+    assert!(res.is_err());
 }
 
 #[test]

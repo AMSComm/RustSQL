@@ -3,13 +3,16 @@ use crate::error::{Result, RsqlError};
 use crate::output::{OutputFormat, QueryResult};
 use colored::Colorize;
 use std::fs;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 pub struct AppState {
     pub format: OutputFormat,
     pub timing: bool,
     pub quiet: bool,
     pub echo_all: bool,
+    pub tuples_only: bool,
+    pub null_str: String,
+    pub field_sep: String,
     pub last_query: String,
     pub vars: std::collections::HashMap<String, String>,
 }
@@ -21,6 +24,9 @@ impl Default for AppState {
             timing: false,
             quiet: false,
             echo_all: false,
+            tuples_only: false,
+            null_str: String::new(),
+            field_sep: "|".to_string(),
             last_query: String::new(),
             vars: std::collections::HashMap::new(),
         }
@@ -40,8 +46,9 @@ pub enum MetaCommand {
     ListDatashares,
     Describe(Option<String>, String),
     ListUsers,
-    ToggleExpanded,
-    ToggleTiming,
+    ToggleExpanded(Option<bool>),
+    ToggleTiming(Option<bool>),
+    ToggleTuplesOnly(Option<bool>),
     Connect(String, Option<String>, Option<String>, Option<u16>),
     ConnInfo,
     Edit(Option<String>),
@@ -102,8 +109,9 @@ pub fn parse_meta_command(line: &str) -> Option<MetaCommand> {
             }
         }
         "du" | "du+" | "dg" | "dg+" => Some(MetaCommand::ListUsers),
-        "x" => Some(MetaCommand::ToggleExpanded),
-        "timing" => Some(MetaCommand::ToggleTiming),
+        "x" => Some(MetaCommand::ToggleExpanded(parse_bool_arg(args.first().copied()))),
+        "timing" => Some(MetaCommand::ToggleTiming(parse_bool_arg(args.first().copied()))),
+        "t" => Some(MetaCommand::ToggleTuplesOnly(parse_bool_arg(args.first().copied()))),
         "c" | "connect" => {
             if let Some(db) = args.first() {
                 let user = args.get(1).map(|s| s.to_string());
@@ -126,7 +134,11 @@ pub fn parse_meta_command(line: &str) -> Option<MetaCommand> {
         }
         "pset" => {
             if let Some(opt) = args.first() {
-                let val = args.get(1).map(|s| s.to_string());
+                let val = if args.len() > 1 {
+                    Some(args[1..].join(" "))
+                } else {
+                    None
+                };
                 Some(MetaCommand::Pset(opt.to_string(), val))
             } else {
                 None
@@ -198,23 +210,28 @@ pub async fn execute_meta_command(
             let sql = conn.dialect.list_users_query();
             run_and_display_meta_query(conn, state, sql).await?;
         }
-        MetaCommand::ToggleExpanded => {
-            state.format = match state.format {
-                OutputFormat::Expanded => {
-                    println!("Expanded display is off.");
-                    OutputFormat::Aligned
-                }
-                _ => {
-                    println!("Expanded display is on.");
-                    OutputFormat::Expanded
-                }
-            };
+        MetaCommand::ToggleExpanded(explicit) => {
+            let next = explicit.unwrap_or(state.format != OutputFormat::Expanded);
+            if next {
+                state.format = OutputFormat::Expanded;
+                println!("Expanded display is on.");
+            } else {
+                state.format = OutputFormat::Aligned;
+                println!("Expanded display is off.");
+            }
         }
-        MetaCommand::ToggleTiming => {
-            state.timing = !state.timing;
+        MetaCommand::ToggleTiming(explicit) => {
+            state.timing = explicit.unwrap_or(!state.timing);
             println!(
                 "Timing is {}.",
                 if state.timing { "on" } else { "off" }
+            );
+        }
+        MetaCommand::ToggleTuplesOnly(explicit) => {
+            state.tuples_only = explicit.unwrap_or(!state.tuples_only);
+            println!(
+                "Tuples only is {}.",
+                if state.tuples_only { "on" } else { "off" }
             );
         }
         MetaCommand::ConnInfo => {
@@ -272,8 +289,8 @@ async fn run_and_display_meta_query(
     let start = Instant::now();
     let rows = conn.client.query(sql, &[]).await?;
     let duration = start.elapsed();
-    let res = QueryResult::from_rows(&rows, duration, None);
-    res.display(state.format, state.timing, true)?;
+    let res = QueryResult::from_rows(&rows, duration, None, &state.null_str);
+    res.display(state.format, state.timing, state.tuples_only, true)?;
     Ok(())
 }
 
@@ -298,16 +315,16 @@ async fn describe_target(
                             .cyan()
                             .bold()
                     );
-                    let res = QueryResult::from_rows(&rows, Duration::from_millis(0), None);
-                    res.display(state.format, state.timing, false)?;
+                    let res = QueryResult::from_rows(&rows, Duration::from_millis(0), None, &state.null_str);
+                    res.display(state.format, state.timing, state.tuples_only, false)?;
 
                     // Also show partition location
                     if let Some(part_sql) = conn.dialect.list_external_partitions_query(schema, table) {
                         if let Ok(part_rows) = conn.client.query(&part_sql, &[]).await {
                             if !part_rows.is_empty() {
                                 println!("\n{}", "Sample External Partitions:".cyan());
-                                let part_res = QueryResult::from_rows(&part_rows, Duration::from_millis(0), None);
-                                part_res.display(state.format, false, false)?;
+                                let part_res = QueryResult::from_rows(&part_rows, Duration::from_millis(0), None, &state.null_str);
+                                part_res.display(state.format, false, state.tuples_only, false)?;
                             }
                         }
                     }
@@ -332,8 +349,8 @@ async fn describe_target(
                     None => table.to_string(),
                 };
                 println!("{}", format!("Table \"{}\":", full_name).cyan().bold());
-                let res = QueryResult::from_rows(&rows, Duration::from_millis(0), None);
-                res.display(state.format, state.timing, false)?;
+                let res = QueryResult::from_rows(&rows, Duration::from_millis(0), None, &state.null_str);
+                res.display(state.format, state.timing, state.tuples_only, false)?;
             }
         }
         Err(e) => {
@@ -368,11 +385,12 @@ fn print_general_help(has_external: bool) {
     println!("  \\h [cmd]           help on SQL syntax");
     println!("  \\conninfo          display information about current connection");
     println!("  \\c [db] [usr] [h]  connect to new database");
-    println!("  \\timing            toggle timing of commands");
-    println!("  \\x                 toggle expanded table output (on/off)");
+    println!("  \\timing [on|off]   toggle timing of commands");
+    println!("  \\x [on|off]        toggle expanded table output");
+    println!("  \\t [on|off]        toggle tuples only (no headers/footers)");
     println!("  \\e [file]          edit the current query buffer in $EDITOR");
     println!("  \\i <file>          execute commands from file");
-    println!("  \\pset format <fmt> set format (aligned, expanded, csv, json, markdown)");
+    println!("  \\pset <opt> [val]  set table options (format, null, tuples_only, fieldsep, border)");
     println!();
     println!("{}", "Informational Queries:".bold());
     println!("  \\l, \\list          list all databases (including datashares)");
@@ -414,14 +432,18 @@ fn print_sql_help(topic: Option<&str>) {
     }
 }
 
-fn handle_pset(opt: &str, val: Option<&str>, state: &mut AppState) {
-    match opt {
+pub fn handle_pset(opt: &str, val: Option<&str>, state: &mut AppState) {
+    match opt.to_lowercase().as_str() {
         "format" => {
             if let Some(v) = val {
                 match v.to_lowercase().as_str() {
                     "csv" => {
                         state.format = OutputFormat::Csv;
                         println!("Output format is csv.");
+                    }
+                    "tsv" => {
+                        state.format = OutputFormat::Tsv;
+                        println!("Output format is tsv.");
                     }
                     "json" => {
                         state.format = OutputFormat::Json;
@@ -444,9 +466,67 @@ fn handle_pset(opt: &str, val: Option<&str>, state: &mut AppState) {
                 println!("Current output format is {:?}.", state.format);
             }
         }
+        "null" => {
+            if let Some(v) = val {
+                let stripped = strip_quotes(v);
+                println!("Null display is \"{}\".", stripped);
+                state.null_str = stripped;
+            } else {
+                println!("Null display is \"{}\".", state.null_str);
+            }
+        }
+        "tuples_only" | "t" => {
+            let next = match val {
+                Some(_) => parse_bool_arg(val).unwrap_or(!state.tuples_only),
+                None => !state.tuples_only,
+            };
+            state.tuples_only = next;
+            println!("Tuples only is {}.", if state.tuples_only { "on" } else { "off" });
+        }
+        "fieldsep" | "f" => {
+            if let Some(v) = val {
+                let stripped = strip_quotes(v);
+                println!("Field separator is \"{}\".", stripped);
+                state.field_sep = stripped;
+            } else {
+                println!("Field separator is \"{}\".", state.field_sep);
+            }
+        }
+        "expanded" | "x" => {
+            let next = match val {
+                Some(_) => parse_bool_arg(val).unwrap_or(state.format != OutputFormat::Expanded),
+                None => state.format != OutputFormat::Expanded,
+            };
+            if next {
+                state.format = OutputFormat::Expanded;
+                println!("Expanded display is on.");
+            } else {
+                state.format = OutputFormat::Aligned;
+                println!("Expanded display is off.");
+            }
+        }
         _ => {
             println!("Unrecognized \\pset option: {}", opt);
         }
+    }
+}
+
+fn strip_quotes(s: &str) -> String {
+    let trimmed = s.trim();
+    if ((trimmed.starts_with('\'') && trimmed.ends_with('\''))
+        || (trimmed.starts_with('"') && trimmed.ends_with('"')))
+        && trimmed.len() >= 2
+    {
+        return trimmed[1..trimmed.len() - 1].to_string();
+    }
+    trimmed.to_string()
+}
+
+fn parse_bool_arg(arg: Option<&str>) -> Option<bool> {
+    match arg.map(|s| s.to_lowercase()).as_deref() {
+        Some("on") | Some("true") | Some("1") | Some("yes") => Some(true),
+        Some("off") | Some("false") | Some("0") | Some("no") => Some(false),
+        _ => None,
     }
 }
 
@@ -478,7 +558,7 @@ async fn handle_include(
     state: &mut AppState,
 ) -> Result<()> {
     let content = fs::read_to_string(filepath)
-        .map_err(|e| RsqlError::Io(e))?;
+        .map_err(RsqlError::Io)?;
 
     println!("Executing script from \"{}\"...", filepath);
     for stmt in content.split(';') {
@@ -505,7 +585,7 @@ async fn handle_include(
                                 }
                                 let mut vals = Vec::new();
                                 for i in 0..cols.len() {
-                                    vals.push(r.get(i).unwrap_or("NULL").to_string());
+                                    vals.push(r.get(i).unwrap_or(&state.null_str).to_string());
                                 }
                                 let res = QueryResult {
                                     columns: cols,
@@ -514,12 +594,10 @@ async fn handle_include(
                                     rows_affected: Some(1),
                                     duration,
                                 };
-                                res.display(state.format, state.timing, false)?;
+                                res.display(state.format, state.timing, state.tuples_only, false)?;
                             }
-                            tokio_postgres::SimpleQueryMessage::CommandComplete(n) => {
-                                if !state.quiet {
-                                    println!("{} ({:.3} ms)", n, duration.as_secs_f64() * 1000.0);
-                                }
+                            tokio_postgres::SimpleQueryMessage::CommandComplete(n) if !state.quiet => {
+                                println!("{} ({:.3} ms)", n, duration.as_secs_f64() * 1000.0);
                             }
                             _ => {}
                         }
@@ -533,5 +611,3 @@ async fn handle_include(
     }
     Ok(())
 }
-
-use std::time::Duration;

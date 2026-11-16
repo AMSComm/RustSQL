@@ -22,13 +22,21 @@ pub enum SslMode {
     Require,
 }
 
-impl SslMode {
-    pub fn from_str(s: &str) -> Self {
+impl std::str::FromStr for SslMode {
+    type Err = std::convert::Infallible;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
-            "disable" => SslMode::Disable,
-            "require" | "verify-ca" | "verify-full" => SslMode::Require,
-            _ => SslMode::Prefer,
+            "disable" => Ok(SslMode::Disable),
+            "require" | "verify-ca" | "verify-full" => Ok(SslMode::Require),
+            _ => Ok(SslMode::Prefer),
         }
+    }
+}
+
+impl SslMode {
+    pub fn parse_mode(s: &str) -> Self {
+        s.parse().unwrap_or(SslMode::Prefer)
     }
 }
 
@@ -110,7 +118,7 @@ impl ConnectionConfig {
         let ssl_mode = uri_parsed
             .as_ref()
             .and_then(|u| u.ssl_mode)
-            .or_else(|| env::var("PGSSLMODE").ok().map(|s| SslMode::from_str(&s)))
+            .or_else(|| env::var("PGSSLMODE").ok().map(|s| SslMode::parse_mode(&s)))
             .unwrap_or(if is_redshift {
                 SslMode::Require
             } else {
@@ -187,7 +195,7 @@ fn parse_postgres_uri(uri_str: &str) -> Result<ParsedUri> {
         for param in q.split('&') {
             if let Some((k, v)) = param.split_once('=') {
                 if k.eq_ignore_ascii_case("sslmode") {
-                    ssl_mode = Some(SslMode::from_str(v));
+                    ssl_mode = Some(SslMode::parse_mode(v));
                 }
             }
         }
@@ -216,7 +224,11 @@ fn find_pgpass_password(host: &str, port: u16, dbname: &str, user: &str) -> Opti
     let file = File::open(pgpass_path).ok()?;
     let reader = BufReader::new(file);
 
-    for line in reader.lines().flatten() {
+    for line_res in reader.lines() {
+        let line = match line_res {
+            Ok(l) => l,
+            Err(_) => continue,
+        };
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
             continue;

@@ -175,7 +175,7 @@ pub async fn run_interactive_repl(
                                         }
                                         let mut vals = Vec::new();
                                         for i in 0..cols.len() {
-                                            vals.push(r.get(i).unwrap_or("NULL").to_string());
+                                            vals.push(r.get(i).unwrap_or(&state.null_str).to_string());
                                         }
                                         let res = QueryResult {
                                             columns: cols,
@@ -184,19 +184,17 @@ pub async fn run_interactive_repl(
                                             rows_affected: Some(1),
                                             duration,
                                         };
-                                        let _ = res.display(state.format, state.timing, true);
+                                        let _ = res.display(state.format, state.timing, state.tuples_only, true);
                                     }
-                                    tokio_postgres::SimpleQueryMessage::CommandComplete(tag) => {
-                                        if !state.quiet {
-                                            if state.timing {
-                                                println!(
-                                                    "{} ({:.3} ms)",
-                                                    tag,
-                                                    duration.as_secs_f64() * 1000.0
-                                                );
-                                            } else {
-                                                println!("{}", tag);
-                                            }
+                                    tokio_postgres::SimpleQueryMessage::CommandComplete(tag) if !state.quiet => {
+                                        if state.timing {
+                                            println!(
+                                                "{} ({:.3} ms)",
+                                                tag,
+                                                duration.as_secs_f64() * 1000.0
+                                            );
+                                        } else {
+                                            println!("{}", tag);
                                         }
                                     }
                                     _ => {}

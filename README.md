@@ -33,11 +33,19 @@ Standard `psql` (especially versions 14 to 17) encounters severe issues in heter
   - `\dep <schema.table>`: Inspects partition keys and partition values (`SVV_EXTERNAL_PARTITIONS`).
   - `\ds`: Lists Redshift Data Shares (cross-cluster and AWS Data Exchange).
   - `\d <table>`: Automatically detects if a table is external (queries `SVV_EXTERNAL_COLUMNS`) or local (shows Redshift `DISTKEY`, `SORTKEY`, and column `ENCODE`).
+- **High-Performance CSV & TSV Export**:
+  - `--csv`: Export query output formatted as standard RFC 4180 CSV (requires `-c`).
+  - `--tsv`: Export query output formatted as TSV (Tab-Separated Values, requires `-c`).
+  - By default includes column header row.
+  - `--no-header` / `-t` / `--tuples-only`: Suppresses column header row.
+- **Startup Configuration Files**:
+  - Automatically loads and executes settings from `~/.psqlrc`, `~/.redshiftrc`, and `~/.rsqlrc` (or `$PSQLRC`).
+  - Support for `-X` / `--no-psqlrc` to skip loading startup files.
 - **Modern Developer Ergonomics**:
   - **Live Syntax Highlighting**: Colors SQL keywords, literals, numbers, comments, and meta-commands in real-time.
   - **Context-Aware Tab Completion**: Auto-completes SQL keywords, meta-commands, schemas, local tables, and external Spectrum tables.
   - **Multi-Line Editing**: Seamless multi-line statement assembly until `;` is entered.
-  - **Rich Output Formats**: Aligned Unicode tables, Expanded `\x` record display, CSV, JSON, and Markdown tables.
+  - **Rich Output Formats**: Aligned Unicode tables, Expanded `\x` record display, CSV, TSV, JSON, and Markdown tables.
   - **Adaptive Pager**: Automatically activates scrollable pager for wide or tall result sets.
   - **Command History**: Persistent history saved to `~/.rsql_history`.
 
@@ -78,11 +86,25 @@ rsql postgresql://user:pass@my-redshift-cluster.xyz.redshift.amazonaws.com:5439/
 # Connect using traditional flags
 rsql -h localhost -p 5432 -U postgres -d mydb
 
-# Run a single query and output as CSV
-rsql -h localhost -d mydb --csv -c "SELECT * FROM users LIMIT 10;"
+# Run a query and output as CSV (with header)
+rsql -h localhost -d mydb --csv -c "SELECT id, name, created_at FROM users LIMIT 10;"
+
+# Run a query and output as CSV without headers
+rsql -h localhost -d mydb --csv --no-header -c "SELECT id, name FROM users LIMIT 10;"
+# Or using psql short alias -t:
+rsql -h localhost -d mydb --csv -t -c "SELECT id, name FROM users LIMIT 10;"
+
+# Run a query and output as TSV (Tab-Separated Values)
+rsql -h localhost -d mydb --tsv -c "SELECT id, name FROM users LIMIT 10;"
+
+# Run a query and output as TSV without header
+rsql -h localhost -d mydb --tsv -t -c "SELECT id, name FROM users LIMIT 10;"
 
 # Run a single query and output as JSON
 rsql -h localhost -d mydb --json -c "SELECT * FROM users LIMIT 10;"
+
+# Skip reading ~/.psqlrc, ~/.rsqlrc, ~/.redshiftrc
+rsql -X -h localhost -d mydb -c "SELECT 1;"
 
 # Run a SQL script file
 rsql -h localhost -d mydb -f migrations.sql
@@ -98,8 +120,24 @@ rsql -h remote-host -U user -d db -W
 - `PGDATABASE`
 - `PGPASSWORD`
 - `PGSSLMODE` (`disable`, `prefer`, `require`)
+- `PSQLRC` (path to custom rc file)
 - `DATABASE_URL`
 - `~/.pgpass` file is automatically read if password is not supplied in CLI or env.
+
+---
+
+## ⚙️ Configuration via `~/.psqlrc` or `~/.redshiftrc`
+
+`rsql` reads configuration commands from `~/.psqlrc`, `~/.redshiftrc` (when connecting to Redshift), or `~/.rsqlrc`:
+
+```sql
+-- ~/.psqlrc or ~/.redshiftrc
+\timing on
+\pset null '[NULL]'
+\pset format aligned
+\pset tuples_only off
+\set PROMPT1 '%n@%m:%/%R%# '
+```
 
 ---
 
@@ -120,10 +158,11 @@ rsql -h remote-host -U user -d db -W
 | `\ds` | List Redshift Data Shares | Producer / consumer shares |
 | `\d <tbl>` | Describe table columns & metadata | Shows Redshift `DISTKEY`, `SORTKEY`, `ENCODE` or Spectrum external columns |
 | `\du` / `\dg` | List database roles/users | Safe across modern PG, legacy PG, and Redshift |
-| `\x` | Toggle expanded vertical record display | |
-| `\timing` | Toggle query execution timer | |
+| `\x [on\|off]` | Toggle expanded vertical record display | |
+| `\t [on\|off]` | Toggle tuples-only mode (hide headers and row counts) | |
+| `\timing [on\|off]` | Toggle query execution timer | |
 | `\c <db> [usr] [host] [port]` | Connect to a new database without leaving `rsql` | |
-| `\pset format <fmt>` | Set output format (`aligned`, `expanded`, `csv`, `json`, `markdown`) | |
+| `\pset <opt> [val]` | Set table options (`format`, `null`, `tuples_only`, `fieldsep`, `border`) | |
 | `\e [file]` | Edit query buffer in `$EDITOR` | |
 | `\i <file>` | Execute commands from file | |
 

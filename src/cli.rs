@@ -57,9 +57,26 @@ pub struct CliArgs {
     #[arg(short = 'x', long = "expanded")]
     pub expanded: bool,
 
-    /// Output query results as CSV
-    #[arg(long = "csv")]
+    /// Output query results as CSV (requires -c/--command)
+    #[arg(long = "csv", conflicts_with = "tsv")]
     pub csv: bool,
+
+    /// Output query results as TSV (requires -c/--command)
+    #[arg(long = "tsv", conflicts_with = "csv")]
+    pub tsv: bool,
+
+    /// Do not print column headers (tuples only)
+    #[arg(
+        long = "no-header",
+        visible_alias = "no-headers",
+        visible_alias = "tuples-only",
+        short = 't'
+    )]
+    pub no_header: bool,
+
+    /// Do not read startup files (~/.psqlrc, ~/.rsqlrc, ~/.redshiftrc)
+    #[arg(short = 'X', long = "no-psqlrc")]
+    pub no_psqlrc: bool,
 
     /// Output query results as JSON
     #[arg(long = "json")]
