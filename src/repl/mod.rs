@@ -73,17 +73,18 @@ pub async fn run_interactive_repl(
         let _ = rl.load_history(path);
     }
 
-    // Print welcome banner
-    println!(
-        "{} (0.1.0)",
-        "rsql - Next-Gen PostgreSQL & Amazon Redshift CLI".bold()
+    // Print welcome banner (matching psql 17.4)
+    let client_version = "17.4";
+    let server_ver = crate::connection::parse_server_short_version(
+        &conn.server_version,
+        conn.dialect.has_external_support(),
     );
-    println!("Type \"help\" or \"\\?\" for help. Type \"\\q\" to exit.");
-    println!(
-        "Connected to [{}] as user \"{}\".",
-        conn.dialect.dialect_name().cyan().bold(),
-        conn.config.user.green().bold()
-    );
+    if server_ver == client_version {
+        println!("psql ({})", client_version);
+    } else {
+        println!("psql ({}, server {})", client_version, server_ver);
+    }
+    println!("Type \"help\" for help.");
     println!();
 
     // Background preload auto-complete cache

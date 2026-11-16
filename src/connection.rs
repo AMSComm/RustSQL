@@ -17,12 +17,15 @@ pub struct DbConnection {
 
 impl DbConnection {
     pub async fn connect(config: ConnectionConfig) -> Result<Self> {
+        let app_name = std::env::var("PGAPPNAME").unwrap_or_else(|_| "psql".to_string());
+
         let mut pg_config = tokio_postgres::Config::new();
         pg_config
             .host(&config.host)
             .port(config.port)
             .user(&config.user)
-            .dbname(&config.dbname);
+            .dbname(&config.dbname)
+            .application_name(&app_name);
 
         if let Some(pass) = &config.password {
             pg_config.password(pass);
@@ -182,4 +185,20 @@ async fn check_superuser(client: &Client) -> Result<bool> {
         }
     }
     Ok(false)
+}
+
+pub fn parse_server_short_version(version_str: &str, is_redshift: bool) -> String {
+    let lower = version_str.to_lowercase();
+    let num_part = if let Some(pos) = lower.find("postgresql ") {
+        let after = &version_str[pos + 11..];
+        after.split_whitespace().next().unwrap_or("8.0.2")
+    } else {
+        "8.0.2"
+    };
+
+    if is_redshift || lower.contains("redshift") {
+        format!("{} - Amazon Redshift", num_part)
+    } else {
+        num_part.to_string()
+    }
 }

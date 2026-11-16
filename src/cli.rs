@@ -2,10 +2,10 @@ use clap::Parser;
 
 #[derive(Parser, Debug, Clone)]
 #[command(
-    name = "rsql",
+    name = "psql",
     author = "Huy <dev@amsoftware.com.vn>",
-    version = "0.1.0",
-    about = "rsql - Next-Generation PostgreSQL and Amazon Redshift CLI\nFull psql compatibility with Redshift Lakehouse/External DB & Legacy Postgres support",
+    version = "17.4 (rsql 0.1.0)",
+    about = "psql (PostgreSQL) 17.4 (rsql clone) - Next-Generation PostgreSQL and Amazon Redshift CLI\nFull psql compatibility with Redshift Lakehouse/External DB & Legacy Postgres support",
     disable_help_flag = true
 )]
 pub struct CliArgs {

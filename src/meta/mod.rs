@@ -365,19 +365,20 @@ async fn describe_target(
 
 fn print_conninfo(conn: &DbConnection) {
     let ssl_info = match conn.config.ssl_mode {
-        crate::config::SslMode::Disable => "unencrypted".yellow().to_string(),
-        _ => "SSL encrypted (TLS)".green().to_string(),
+        crate::config::SslMode::Disable => "an unencrypted connection".yellow().to_string(),
+        _ => "SSL encryption".green().to_string(),
     };
     println!(
-        "You are connected to database \"{}\" as user \"{}\" on host \"{}\" (port {}) via {}.",
+        "You are connected to database \"{}\" as user \"{}\" on host \"{}\" (port {}) with {}.",
         conn.config.dbname.bold(),
         conn.config.user.bold(),
         conn.config.host,
         conn.config.port,
         ssl_info
     );
+    println!("Client: psql (PostgreSQL) 17.4 (rsql 0.1.0)");
+    println!("Server: {}", conn.server_version.trim());
     println!("Engine Dialect: {}", conn.dialect.dialect_name().cyan().bold());
-    println!("Server Version: {}", conn.server_version.trim());
 }
 
 fn print_general_help(has_external: bool) {
