@@ -14,7 +14,7 @@ use rustyline::error::ReadlineError;
 use rustyline::highlight::{CmdKind, Highlighter};
 use rustyline::hint::Hinter;
 use rustyline::validate::Validator;
-use rustyline::{Context, Editor, Helper};
+use rustyline::{CompletionType, Config, Context, EditMode, Editor, Helper};
 use std::borrow::Cow;
 
 #[derive(Clone)]
@@ -66,7 +66,15 @@ pub async fn run_interactive_repl(
         highlighter: SqlHighlighter,
     };
 
-    let mut rl = Editor::new().map_err(|e| crate::error::RsqlError::Other(e.to_string()))?;
+    let config = Config::builder()
+        .completion_type(CompletionType::List)
+        .completion_prompt_limit(100)
+        .edit_mode(EditMode::Emacs)
+        .auto_add_history(false)
+        .build();
+
+    let mut rl = Editor::with_config(config)
+        .map_err(|e| crate::error::RsqlError::Other(e.to_string()))?;
     rl.set_helper(Some(helper));
 
     if let Some(ref path) = history_path {
@@ -87,18 +95,8 @@ pub async fn run_interactive_repl(
     println!("Type \"help\" for help.");
     println!();
 
-    // Background preload auto-complete cache
-    let completer_clone = completer.clone();
-    let tables_sql = conn.dialect.list_tables_query(None);
-    if let Ok(rows) = conn.client.query(&tables_sql, &[]).await {
-        let mut objs = Vec::new();
-        for r in rows {
-            if let Ok(name) = r.try_get::<_, String>(1) {
-                objs.push(name);
-            }
-        }
-        completer_clone.add_objects(objs);
-    }
+    // Preload auto-complete cache
+    preload_cache(&conn, &completer).await;
 
     let mut query_buffer = String::new();
 
@@ -124,8 +122,14 @@ pub async fn run_interactive_repl(
                 // Check meta-command if at start of statement
                 if query_buffer.is_empty() && trimmed.starts_with('\\') {
                     if let Some(meta) = parse_meta_command(trimmed) {
+                        let is_connect = matches!(meta, crate::meta::MetaCommand::Connect(..));
                         match execute_meta_command(meta, &mut conn, &mut state).await {
-                            Ok(true) => continue,
+                            Ok(true) => {
+                                if is_connect {
+                                    preload_cache(&conn, &completer).await;
+                                }
+                                continue;
+                            }
                             Ok(false) => break, // Quit
                             Err(e) => {
                                 eprintln!("{}", format!("Error: {}", e).red());
@@ -192,4 +196,74 @@ pub async fn run_interactive_repl(
     }
 
     Ok(())
+}
+
+pub async fn preload_cache(conn: &DbConnection, completer: &SqlCompleter) {
+    let mut tables = Vec::new();
+    let mut schemas = Vec::new();
+    let mut views = Vec::new();
+    let mut databases = Vec::new();
+    let mut columns = Vec::new();
+
+    // 1. Tables
+    let tbl_sql = conn.dialect.list_tables_query(None);
+    if let Ok(rows) = conn.client.query(&tbl_sql, &[]).await {
+        for r in rows {
+            let schema: Option<String> = r.try_get(0).ok();
+            let name: Option<String> = r.try_get(1).ok();
+            if let Some(n) = name {
+                tables.push(n.clone());
+                if let Some(s) = schema {
+                    tables.push(format!("{}.{}", s, n));
+                }
+            }
+        }
+    }
+
+    // 2. Views
+    let view_sql = conn.dialect.list_views_query(None);
+    if let Ok(rows) = conn.client.query(&view_sql, &[]).await {
+        for r in rows {
+            let schema: Option<String> = r.try_get(0).ok();
+            let name: Option<String> = r.try_get(1).ok();
+            if let Some(n) = name {
+                views.push(n.clone());
+                if let Some(s) = schema {
+                    views.push(format!("{}.{}", s, n));
+                }
+            }
+        }
+    }
+
+    // 3. Schemas
+    let schema_sql = conn.dialect.list_schemas_query(None);
+    if let Ok(rows) = conn.client.query(&schema_sql, &[]).await {
+        for r in rows {
+            if let Ok(s) = r.try_get::<_, String>(0) {
+                schemas.push(s);
+            }
+        }
+    }
+
+    // 4. Databases
+    let db_sql = conn.dialect.list_databases_query();
+    if let Ok(rows) = conn.client.query(db_sql, &[]).await {
+        for r in rows {
+            if let Ok(db) = r.try_get::<_, String>(0) {
+                databases.push(db);
+            }
+        }
+    }
+
+    // 5. Columns
+    let col_sql = "SELECT DISTINCT attname FROM pg_attribute WHERE attnum > 0 AND NOT attisdropped ORDER BY 1 LIMIT 500;";
+    if let Ok(rows) = conn.client.query(col_sql, &[]).await {
+        for r in rows {
+            if let Ok(c) = r.try_get::<_, String>(0) {
+                columns.push(c);
+            }
+        }
+    }
+
+    completer.update_cache(tables, schemas, views, databases, columns);
 }
