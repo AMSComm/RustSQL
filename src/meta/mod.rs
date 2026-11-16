@@ -11,6 +11,7 @@ pub struct AppState {
     pub quiet: bool,
     pub echo_all: bool,
     pub tuples_only: bool,
+    pub border: u8,
     pub null_str: String,
     pub field_sep: String,
     pub last_query: String,
@@ -25,6 +26,7 @@ impl Default for AppState {
             quiet: false,
             echo_all: false,
             tuples_only: false,
+            border: 1,
             null_str: String::new(),
             field_sep: "|".to_string(),
             last_query: String::new(),
@@ -290,7 +292,7 @@ async fn run_and_display_meta_query(
     let rows = conn.client.query(sql, &[]).await?;
     let duration = start.elapsed();
     let res = QueryResult::from_rows(&rows, duration, None, &state.null_str);
-    res.display(state.format, state.timing, state.tuples_only, true)?;
+    res.display(state.format, state.timing, state.tuples_only, state.border, true)?;
     Ok(())
 }
 
@@ -316,7 +318,7 @@ async fn describe_target(
                             .bold()
                     );
                     let res = QueryResult::from_rows(&rows, Duration::from_millis(0), None, &state.null_str);
-                    res.display(state.format, state.timing, state.tuples_only, false)?;
+                    res.display(state.format, state.timing, state.tuples_only, state.border, false)?;
 
                     // Also show partition location
                     if let Some(part_sql) = conn.dialect.list_external_partitions_query(schema, table) {
@@ -324,7 +326,7 @@ async fn describe_target(
                             if !part_rows.is_empty() {
                                 println!("\n{}", "Sample External Partitions:".cyan());
                                 let part_res = QueryResult::from_rows(&part_rows, Duration::from_millis(0), None, &state.null_str);
-                                part_res.display(state.format, false, state.tuples_only, false)?;
+                                part_res.display(state.format, false, state.tuples_only, state.border, false)?;
                             }
                         }
                     }
@@ -350,7 +352,7 @@ async fn describe_target(
                 };
                 println!("{}", format!("Table \"{}\":", full_name).cyan().bold());
                 let res = QueryResult::from_rows(&rows, Duration::from_millis(0), None, &state.null_str);
-                res.display(state.format, state.timing, state.tuples_only, false)?;
+                res.display(state.format, state.timing, state.tuples_only, state.border, false)?;
             }
         }
         Err(e) => {
@@ -492,6 +494,18 @@ pub fn handle_pset(opt: &str, val: Option<&str>, state: &mut AppState) {
                 println!("Field separator is \"{}\".", state.field_sep);
             }
         }
+        "border" => {
+            if let Some(v) = val {
+                if let Ok(b) = v.trim().parse::<u8>() {
+                    state.border = b;
+                    println!("Border style is {}.", b);
+                } else {
+                    println!("Border style must be a number (0, 1, 2).");
+                }
+            } else {
+                println!("Border style is {}.", state.border);
+            }
+        }
         "expanded" | "x" => {
             let next = match val {
                 Some(_) => parse_bool_arg(val).unwrap_or(state.format != OutputFormat::Expanded),
@@ -571,42 +585,8 @@ async fn handle_include(
             if let Some(meta) = parse_meta_command(trimmed) {
                 Box::pin(execute_meta_command(meta, conn, state)).await?;
             }
-        } else {
-            let start = Instant::now();
-            match conn.client.simple_query(trimmed).await {
-                Ok(messages) => {
-                    let duration = start.elapsed();
-                    for msg in messages {
-                        match msg {
-                            tokio_postgres::SimpleQueryMessage::Row(r) => {
-                                let mut cols = Vec::new();
-                                for i in 0..r.columns().len() {
-                                    cols.push(r.columns()[i].name().to_string());
-                                }
-                                let mut vals = Vec::new();
-                                for i in 0..cols.len() {
-                                    vals.push(r.get(i).unwrap_or(&state.null_str).to_string());
-                                }
-                                let res = QueryResult {
-                                    columns: cols,
-                                    rows: vec![vals],
-                                    command_tag: None,
-                                    rows_affected: Some(1),
-                                    duration,
-                                };
-                                res.display(state.format, state.timing, state.tuples_only, false)?;
-                            }
-                            tokio_postgres::SimpleQueryMessage::CommandComplete(n) if !state.quiet => {
-                                println!("{} ({:.3} ms)", n, duration.as_secs_f64() * 1000.0);
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-                Err(e) => {
-                    eprintln!("{}", format!("Error: {}", e).red());
-                }
-            }
+        } else if let Err(e) = crate::output::execute_and_display_query(&conn.client, trimmed, state, false).await {
+            eprintln!("{}", format!("Error: {}", e).red());
         }
     }
     Ok(())

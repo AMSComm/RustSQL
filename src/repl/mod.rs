@@ -5,7 +5,6 @@ pub mod prompt;
 use crate::connection::DbConnection;
 use crate::error::Result;
 use crate::meta::{execute_meta_command, parse_meta_command, AppState};
-use crate::output::QueryResult;
 use colored::Colorize;
 use completer::SqlCompleter;
 use highlighter::SqlHighlighter;
@@ -17,7 +16,6 @@ use rustyline::hint::Hinter;
 use rustyline::validate::Validator;
 use rustyline::{Context, Editor, Helper};
 use std::borrow::Cow;
-use std::time::Instant;
 
 #[derive(Clone)]
 pub struct RsqlHelper {
@@ -162,48 +160,8 @@ pub async fn run_interactive_repl(
                     query_buffer.clear();
                     state.last_query = full_query.clone();
 
-                    let start = Instant::now();
-                    match conn.client.simple_query(&full_query).await {
-                        Ok(messages) => {
-                            let duration = start.elapsed();
-                            for msg in messages {
-                                match msg {
-                                    tokio_postgres::SimpleQueryMessage::Row(r) => {
-                                        let mut cols = Vec::new();
-                                        for i in 0..r.columns().len() {
-                                            cols.push(r.columns()[i].name().to_string());
-                                        }
-                                        let mut vals = Vec::new();
-                                        for i in 0..cols.len() {
-                                            vals.push(r.get(i).unwrap_or(&state.null_str).to_string());
-                                        }
-                                        let res = QueryResult {
-                                            columns: cols,
-                                            rows: vec![vals],
-                                            command_tag: None,
-                                            rows_affected: Some(1),
-                                            duration,
-                                        };
-                                        let _ = res.display(state.format, state.timing, state.tuples_only, true);
-                                    }
-                                    tokio_postgres::SimpleQueryMessage::CommandComplete(tag) if !state.quiet => {
-                                        if state.timing {
-                                            println!(
-                                                "{} ({:.3} ms)",
-                                                tag,
-                                                duration.as_secs_f64() * 1000.0
-                                            );
-                                        } else {
-                                            println!("{}", tag);
-                                        }
-                                    }
-                                    _ => {}
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            eprintln!("{}", format!("ERROR: {}", e).red().bold());
-                        }
+                    if let Err(e) = crate::output::execute_and_display_query(&conn.client, &full_query, &state, true).await {
+                        eprintln!("{}", format!("ERROR: {}", e).red().bold());
                     }
                 }
             }

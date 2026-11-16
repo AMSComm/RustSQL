@@ -33,17 +33,37 @@ fn sample_result_with_null() -> QueryResult {
 }
 
 #[test]
-fn test_table_formatting() {
+fn test_table_formatting_psql_style() {
     let res = sample_result();
-    let output = format_table(&res, false).unwrap();
-    assert!(output.contains("Alice"));
-    assert!(output.contains("Bob"));
-    assert!(output.contains("(2 rows)"));
 
-    // Tuples only (no headers, no footer)
-    let output_tuples = format_table(&res, true).unwrap();
-    assert!(output_tuples.contains("Alice"));
+    // Default border 1 (standard psql format)
+    let output = format_table(&res, false, 1).unwrap();
+    assert!(output.contains(" id | name  | active \n"));
+    assert!(output.contains("----+-------+--------\n"));
+    assert!(output.contains("  1 | Alice | t      \n"));
+    assert!(output.contains("  2 | Bob   | f      \n"));
+    assert!(output.contains("(2 rows)\n"));
+    // Ensure no unicode rounded box corners
+    assert!(!output.contains("╭"));
+    assert!(!output.contains("╰"));
+
+    // Tuples only (no headers, no separator, no footer)
+    let output_tuples = format_table(&res, true, 1).unwrap();
+    assert!(!output_tuples.contains("id | name"));
+    assert!(!output_tuples.contains("----+-------"));
     assert!(!output_tuples.contains("(2 rows)"));
+    assert!(output_tuples.contains(" 1 | Alice | t \n"));
+    assert!(output_tuples.contains(" 2 | Bob   | f \n"));
+
+    // Border 2 (box border)
+    let output_border2 = format_table(&res, false, 2).unwrap();
+    assert!(output_border2.starts_with("+----+-------+--------+\n"));
+    assert!(output_border2.contains("| id | name  | active |\n"));
+
+    // Border 0 (no separators)
+    let output_border0 = format_table(&res, false, 0).unwrap();
+    assert!(!output_border0.contains("----+-------"));
+    assert!(output_border0.contains("(2 rows)\n"));
 }
 
 #[test]

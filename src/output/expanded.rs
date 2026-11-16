@@ -10,6 +10,10 @@ pub fn format_expanded(result: &QueryResult) -> Result<String> {
         }
     }
 
+    if result.rows.is_empty() {
+        return Ok("(0 rows)\n".to_string());
+    }
+
     let mut out = String::new();
     let max_col_len = result.columns.iter().map(|c| c.len()).max().unwrap_or(10);
 
@@ -17,7 +21,7 @@ pub fn format_expanded(result: &QueryResult) -> Result<String> {
         let record_num = row_idx + 1;
         let header = format!("-[ RECORD {} ]", record_num);
         let padding_dashes = "-".repeat(40usize.saturating_sub(header.len()));
-        out.push_str(&format!("{}{} \n", header, padding_dashes));
+        out.push_str(&format!("{}{}\n", header, padding_dashes));
 
         for (col_idx, val) in row.iter().enumerate() {
             let col_name = &result.columns[col_idx];
@@ -29,13 +33,6 @@ pub fn format_expanded(result: &QueryResult) -> Result<String> {
             ));
         }
     }
-
-    let row_count = result.rows.len();
-    out.push_str(&format!(
-        "({} {})\n",
-        row_count,
-        if row_count == 1 { "row" } else { "rows" }
-    ));
 
     Ok(out)
 }

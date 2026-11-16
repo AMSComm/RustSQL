@@ -4,12 +4,11 @@ use rsql::config::ConnectionConfig;
 use rsql::connection::DbConnection;
 use rsql::error::Result;
 use rsql::meta::{execute_meta_command, parse_meta_command, AppState};
-use rsql::output::{OutputFormat, QueryResult};
+use rsql::output::{execute_and_display_query, OutputFormat};
 use rsql::rc::load_startup_rc_files;
 use rsql::repl::run_interactive_repl;
 use std::fs;
 use std::process::exit;
-use std::time::Instant;
 
 #[tokio::main]
 async fn main() {
@@ -74,36 +73,7 @@ async fn run_app(args: CliArgs) -> Result<()> {
             }
         }
 
-        let start = Instant::now();
-        let messages = conn.client.simple_query(trimmed).await?;
-        let duration = start.elapsed();
-
-        for msg in messages {
-            match msg {
-                tokio_postgres::SimpleQueryMessage::Row(r) => {
-                    let mut cols = Vec::new();
-                    for i in 0..r.columns().len() {
-                        cols.push(r.columns()[i].name().to_string());
-                    }
-                    let mut vals = Vec::new();
-                    for i in 0..cols.len() {
-                        vals.push(r.get(i).unwrap_or(&state.null_str).to_string());
-                    }
-                    let res = QueryResult {
-                        columns: cols,
-                        rows: vec![vals],
-                        command_tag: None,
-                        rows_affected: Some(1),
-                        duration,
-                    };
-                    res.display(state.format, state.timing, state.tuples_only, false)?;
-                }
-                tokio_postgres::SimpleQueryMessage::CommandComplete(tag) if !state.quiet && !state.tuples_only => {
-                    println!("{}", tag);
-                }
-                _ => {}
-            }
-        }
+        execute_and_display_query(&conn.client, trimmed, &state, false).await?;
         return Ok(());
     }
 
@@ -125,36 +95,7 @@ async fn run_app(args: CliArgs) -> Result<()> {
                     execute_meta_command(meta, &mut conn, &mut state).await?;
                 }
             } else {
-                let start = Instant::now();
-                let messages = conn.client.simple_query(trimmed).await?;
-                let duration = start.elapsed();
-
-                for msg in messages {
-                    match msg {
-                        tokio_postgres::SimpleQueryMessage::Row(r) => {
-                            let mut cols = Vec::new();
-                            for i in 0..r.columns().len() {
-                                cols.push(r.columns()[i].name().to_string());
-                            }
-                            let mut vals = Vec::new();
-                            for i in 0..cols.len() {
-                                vals.push(r.get(i).unwrap_or(&state.null_str).to_string());
-                            }
-                            let res = QueryResult {
-                                columns: cols,
-                                rows: vec![vals],
-                                command_tag: None,
-                                rows_affected: Some(1),
-                                duration,
-                            };
-                            res.display(state.format, state.timing, state.tuples_only, false)?;
-                        }
-                        tokio_postgres::SimpleQueryMessage::CommandComplete(tag) if !state.quiet && !state.tuples_only => {
-                            println!("{}", tag);
-                        }
-                        _ => {}
-                    }
-                }
+                execute_and_display_query(&conn.client, trimmed, &state, false).await?;
             }
         }
         return Ok(());

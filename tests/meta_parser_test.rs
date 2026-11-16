@@ -82,4 +82,10 @@ fn test_pset_options() {
     // Test \pset fieldsep
     handle_pset("fieldsep", Some("','"), &mut state);
     assert_eq!(state.field_sep, ",");
+
+    // Test \pset border
+    handle_pset("border", Some("2"), &mut state);
+    assert_eq!(state.border, 2);
+    handle_pset("border", Some("0"), &mut state);
+    assert_eq!(state.border, 0);
 }
