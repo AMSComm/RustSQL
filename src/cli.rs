@@ -57,6 +57,10 @@ pub struct CliArgs {
     #[arg(short = 'x', long = "expanded")]
     pub expanded: bool,
 
+    /// SSL connection mode: disable, prefer, require, verify-ca, verify-full
+    #[arg(long = "sslmode")]
+    pub sslmode: Option<String>,
+
     /// Output query results as CSV (requires -c/--command)
     #[arg(long = "csv", conflicts_with = "tsv")]
     pub csv: bool,

@@ -3,7 +3,7 @@ use thiserror::Error;
 #[allow(dead_code)]
 #[derive(Error, Debug)]
 pub enum RsqlError {
-    #[error("Connection error: {0}")]
+    #[error("{0}")]
     Connection(String),
 
     #[error("Database error: {0}")]

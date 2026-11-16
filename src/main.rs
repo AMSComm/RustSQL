@@ -12,16 +12,25 @@ use std::process::exit;
 
 #[tokio::main]
 async fn main() {
+    let bin_name = std::env::args()
+        .next()
+        .and_then(|p| {
+            std::path::Path::new(&p)
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+        })
+        .unwrap_or_else(|| "psql".to_string());
+
     let args = CliArgs::parse();
 
     // Validation: --csv and --tsv require -c/--command
     if (args.csv || args.tsv) && args.command.is_none() {
-        eprintln!("rsql: error: --csv and --tsv require -c/--command to be specified");
+        eprintln!("{}: error: --csv and --tsv require -c/--command to be specified", bin_name);
         exit(1);
     }
 
     if let Err(e) = run_app(args).await {
-        eprintln!("rsql: {}", e);
+        eprintln!("{}: error: {}", bin_name, e);
         exit(1);
     }
 }

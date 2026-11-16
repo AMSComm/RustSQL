@@ -5,7 +5,7 @@ use rsql::dialect::Dialect;
 #[test]
 fn test_redshift_dialect_queries() {
     let dialect = RedshiftDialect;
-    assert_eq!(dialect.has_external_support(), true);
+    assert!(dialect.has_external_support());
 
     // Databases query uses svv_redshift_databases
     let db_sql = dialect.list_databases_query();
@@ -56,8 +56,8 @@ fn test_postgres_dialects_queries() {
     let modern = PostgresDialect::new(140000, true);
     let legacy = PostgresDialect::new(90600, false);
 
-    assert_eq!(modern.has_external_support(), false);
-    assert_eq!(legacy.has_external_support(), false);
+    assert!(!modern.has_external_support());
+    assert!(!legacy.has_external_support());
 
     // Modern PG includes partitioned tables 'p'
     let mod_tbl = modern.list_tables_query(None);

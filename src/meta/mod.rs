@@ -364,9 +364,10 @@ async fn describe_target(
 }
 
 fn print_conninfo(conn: &DbConnection) {
-    let ssl_info = match conn.config.ssl_mode {
-        crate::config::SslMode::Disable => "an unencrypted connection".yellow().to_string(),
-        _ => "SSL encryption".green().to_string(),
+    let ssl_info = if conn.is_ssl {
+        "SSL encryption".green().to_string()
+    } else {
+        "an unencrypted connection".yellow().to_string()
     };
     println!(
         "You are connected to database \"{}\" as user \"{}\" on host \"{}\" (port {}) with {}.",

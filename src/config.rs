@@ -18,8 +18,11 @@ pub struct ConnectionConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SslMode {
     Disable,
+    Allow,
     Prefer,
     Require,
+    VerifyCa,
+    VerifyFull,
 }
 
 impl std::str::FromStr for SslMode {
@@ -28,8 +31,25 @@ impl std::str::FromStr for SslMode {
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "disable" => Ok(SslMode::Disable),
-            "require" | "verify-ca" | "verify-full" => Ok(SslMode::Require),
+            "allow" => Ok(SslMode::Allow),
+            "prefer" => Ok(SslMode::Prefer),
+            "require" => Ok(SslMode::Require),
+            "verify-ca" => Ok(SslMode::VerifyCa),
+            "verify-full" => Ok(SslMode::VerifyFull),
             _ => Ok(SslMode::Prefer),
+        }
+    }
+}
+
+impl std::fmt::Display for SslMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SslMode::Disable => write!(f, "disable"),
+            SslMode::Allow => write!(f, "allow"),
+            SslMode::Prefer => write!(f, "prefer"),
+            SslMode::Require => write!(f, "require"),
+            SslMode::VerifyCa => write!(f, "verify-ca"),
+            SslMode::VerifyFull => write!(f, "verify-full"),
         }
     }
 }
@@ -115,15 +135,13 @@ impl ConnectionConfig {
             }
         }
 
-        let ssl_mode = uri_parsed
-            .as_ref()
-            .and_then(|u| u.ssl_mode)
+        let ssl_mode = cli
+            .sslmode
+            .as_deref()
+            .map(SslMode::parse_mode)
+            .or_else(|| uri_parsed.as_ref().and_then(|u| u.ssl_mode))
             .or_else(|| env::var("PGSSLMODE").ok().map(|s| SslMode::parse_mode(&s)))
-            .unwrap_or(if is_redshift {
-                SslMode::Require
-            } else {
-                SslMode::Prefer
-            });
+            .unwrap_or(SslMode::Prefer);
 
         Ok(ConnectionConfig {
             host: default_host,

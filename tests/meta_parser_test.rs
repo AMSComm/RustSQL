@@ -73,11 +73,11 @@ fn test_pset_options() {
 
     // Test \pset tuples_only on
     handle_pset("tuples_only", Some("on"), &mut state);
-    assert_eq!(state.tuples_only, true);
+    assert!(state.tuples_only);
 
     // Test \pset tuples_only off
     handle_pset("tuples_only", Some("off"), &mut state);
-    assert_eq!(state.tuples_only, false);
+    assert!(!state.tuples_only);
 
     // Test \pset fieldsep
     handle_pset("fieldsep", Some("','"), &mut state);
