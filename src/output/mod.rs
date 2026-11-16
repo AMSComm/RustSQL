@@ -6,7 +6,7 @@ pub mod pager;
 pub mod table;
 
 use crate::error::{Result, RsqlError};
-use crate::meta::AppState;
+use crate::meta::{AppState, PagerMode};
 use std::time::{Duration, Instant};
 use tokio_postgres::{Client, Row, SimpleQueryMessage};
 
@@ -79,7 +79,7 @@ impl QueryResult {
         show_timing: bool,
         tuples_only: bool,
         border: u8,
-        use_pager: bool,
+        pager_mode: PagerMode,
     ) -> Result<()> {
         let output = match format {
             OutputFormat::Aligned => table::format_table(self, tuples_only, border)?,
@@ -96,12 +96,7 @@ impl QueryResult {
             final_output.push_str(&timing_str);
         }
 
-        if use_pager {
-            pager::display_with_pager(&final_output)?;
-        } else {
-            print!("{}", final_output);
-        }
-
+        pager::display_with_pager(&final_output, pager_mode)?;
         Ok(())
     }
 }
@@ -112,6 +107,7 @@ pub async fn execute_and_display_query(
     state: &AppState,
     use_pager: bool,
 ) -> Result<()> {
+    let pager_mode = if use_pager { state.pager } else { PagerMode::Off };
     let start = Instant::now();
     let messages = client.simple_query(sql).await.map_err(RsqlError::Database)?;
     let duration = start.elapsed();
@@ -149,7 +145,7 @@ pub async fn execute_and_display_query(
                         state.timing,
                         state.tuples_only,
                         state.border,
-                        use_pager,
+                        pager_mode,
                     )?;
                     current_cols.clear();
                     current_rows.clear();
@@ -176,7 +172,7 @@ pub async fn execute_and_display_query(
                                 state.timing,
                                 state.tuples_only,
                                 state.border,
-                                use_pager,
+                                pager_mode,
                             )?;
                             "".to_string()
                         }

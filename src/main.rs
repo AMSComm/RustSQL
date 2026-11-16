@@ -63,6 +63,16 @@ async fn run_app(args: CliArgs) -> Result<()> {
         state.tuples_only = true;
     }
 
+    if args.no_pager {
+        state.pager = rsql::meta::PagerMode::Off;
+    } else if let Some(p) = &args.pager {
+        match p.to_lowercase().as_str() {
+            "off" | "0" | "false" => state.pager = rsql::meta::PagerMode::Off,
+            "always" => state.pager = rsql::meta::PagerMode::Always,
+            _ => state.pager = rsql::meta::PagerMode::On,
+        }
+    }
+
     state.quiet = args.quiet;
     state.echo_all = args.echo_all;
 

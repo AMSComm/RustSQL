@@ -82,6 +82,14 @@ pub struct CliArgs {
     #[arg(short = 'X', long = "no-psqlrc")]
     pub no_psqlrc: bool,
 
+    /// Do not use pager to display query results
+    #[arg(long = "no-pager")]
+    pub no_pager: bool,
+
+    /// When to use pager: off, on, always
+    #[arg(long = "pager")]
+    pub pager: Option<String>,
+
     /// Output query results as JSON
     #[arg(long = "json")]
     pub json: bool,

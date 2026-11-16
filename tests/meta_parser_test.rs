@@ -88,4 +88,10 @@ fn test_pset_options() {
     assert_eq!(state.border, 2);
     handle_pset("border", Some("0"), &mut state);
     assert_eq!(state.border, 0);
+
+    // Test \pset pager
+    handle_pset("pager", Some("off"), &mut state);
+    assert_eq!(state.pager, rsql::meta::PagerMode::Off);
+    handle_pset("pager", Some("on"), &mut state);
+    assert_eq!(state.pager, rsql::meta::PagerMode::On);
 }

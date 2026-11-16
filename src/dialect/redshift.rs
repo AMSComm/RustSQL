@@ -44,26 +44,39 @@ impl Dialect for RedshiftDialect {
         let base = "SELECT \
             schema_name AS \"Schema\", \
             table_name AS \"Name\", \
-            table_type AS \"Type\", \
-            table_owner AS \"Owner\" \
-         FROM svv_all_tables \
-         WHERE schema_name NOT IN ('pg_catalog', 'information_schema', 'pg_internal') \
-           AND schema_name NOT LIKE 'pg_temp_%' \
-           AND table_type IN ('TABLE', 'EXTERNAL TABLE')";
+            table_type AS \"Type\" \
+         FROM svv_all_tables";
 
         if let Some(p) = pattern {
             let pat = p.replace('*', "%");
-            if pat.contains('.') {
+            if pat == "%" || pat == "%.%" {
+                // \dt * or \dt *.*: show all tables across all schemas (excluding only internal temp)
+                format!("{} WHERE schema_name NOT LIKE 'pg_temp_%' AND table_type IN ('TABLE', 'EXTERNAL TABLE') ORDER BY 1, 2;", base)
+            } else if pat.contains('.') {
                 let parts: Vec<&str> = pat.splitn(2, '.').collect();
                 format!(
-                    "{} AND schema_name ILIKE '{}' AND table_name ILIKE '{}' ORDER BY 1, 2;",
+                    "{} WHERE schema_name ILIKE '{}' AND table_name ILIKE '{}' AND table_type IN ('TABLE', 'EXTERNAL TABLE') ORDER BY 1, 2;",
                     base, parts[0], parts[1]
                 )
             } else {
-                format!("{} AND table_name ILIKE '{}' ORDER BY 1, 2;", base, pat)
+                format!(
+                    "{} WHERE schema_name NOT IN ('pg_catalog', 'information_schema', 'pg_internal') \
+                       AND schema_name NOT LIKE 'pg_temp_%' \
+                       AND table_type IN ('TABLE', 'EXTERNAL TABLE') \
+                       AND table_name ILIKE '{}' \
+                     ORDER BY 1, 2;",
+                    base, pat
+                )
             }
         } else {
-            format!("{} ORDER BY 1, 2;", base)
+            // \dt without pattern: exclude system schemas
+            format!(
+                "{} WHERE schema_name NOT IN ('pg_catalog', 'information_schema', 'pg_internal') \
+                   AND schema_name NOT LIKE 'pg_temp_%' \
+                   AND table_type IN ('TABLE', 'EXTERNAL TABLE') \
+                 ORDER BY 1, 2;",
+                base
+            )
         }
     }
 
@@ -71,18 +84,36 @@ impl Dialect for RedshiftDialect {
         let base = "SELECT \
             schema_name AS \"Schema\", \
             table_name AS \"Name\", \
-            table_type AS \"Type\", \
-            table_owner AS \"Owner\" \
+            table_type AS \"Type\" \
          FROM svv_all_tables \
-         WHERE schema_name NOT IN ('pg_catalog', 'information_schema', 'pg_internal') \
-           AND schema_name NOT LIKE 'pg_temp_%' \
-           AND table_type IN ('VIEW', 'MATERIALIZED VIEW', 'SECURE VIEW', 'LATE BINDING VIEW')";
+         WHERE table_type IN ('VIEW', 'MATERIALIZED VIEW', 'SECURE VIEW', 'LATE BINDING VIEW')";
 
         if let Some(p) = pattern {
             let pat = p.replace('*', "%");
-            format!("{} AND table_name ILIKE '{}' ORDER BY 1, 2;", base, pat)
+            if pat == "%" || pat == "%.%" {
+                format!("{} AND schema_name NOT LIKE 'pg_temp_%' ORDER BY 1, 2;", base)
+            } else if pat.contains('.') {
+                let parts: Vec<&str> = pat.splitn(2, '.').collect();
+                format!(
+                    "{} AND schema_name ILIKE '{}' AND table_name ILIKE '{}' ORDER BY 1, 2;",
+                    base, parts[0], parts[1]
+                )
+            } else {
+                format!(
+                    "{} AND schema_name NOT IN ('pg_catalog', 'information_schema', 'pg_internal') \
+                       AND schema_name NOT LIKE 'pg_temp_%' \
+                       AND table_name ILIKE '{}' \
+                     ORDER BY 1, 2;",
+                    base, pat
+                )
+            }
         } else {
-            format!("{} ORDER BY 1, 2;", base)
+            format!(
+                "{} AND schema_name NOT IN ('pg_catalog', 'information_schema', 'pg_internal') \
+                   AND schema_name NOT LIKE 'pg_temp_%' \
+                 ORDER BY 1, 2;",
+                base
+            )
         }
     }
 

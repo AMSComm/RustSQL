@@ -132,7 +132,7 @@ pub async fn run_interactive_repl(
                             }
                             Ok(false) => break, // Quit
                             Err(e) => {
-                                eprintln!("{}", format!("Error: {}", e).red());
+                                eprintln!("{}", format!("{}", e).red());
                                 continue;
                             }
                         }

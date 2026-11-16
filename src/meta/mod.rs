@@ -5,6 +5,13 @@ use colored::Colorize;
 use std::fs;
 use std::time::{Duration, Instant};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PagerMode {
+    Off,
+    On,
+    Always,
+}
+
 pub struct AppState {
     pub format: OutputFormat,
     pub timing: bool,
@@ -16,6 +23,7 @@ pub struct AppState {
     pub field_sep: String,
     pub last_query: String,
     pub vars: std::collections::HashMap<String, String>,
+    pub pager: PagerMode,
 }
 
 impl Default for AppState {
@@ -31,6 +39,7 @@ impl Default for AppState {
             field_sep: "|".to_string(),
             last_query: String::new(),
             vars: std::collections::HashMap::new(),
+            pager: PagerMode::On,
         }
     }
 }
@@ -175,7 +184,14 @@ pub async fn execute_meta_command(
         }
         MetaCommand::ListTables(pattern) => {
             let sql = conn.dialect.list_tables_query(pattern.as_deref());
-            run_and_display_meta_query(conn, state, &sql).await?;
+            match run_and_display_meta_query(conn, state, &sql).await {
+                Ok(_) => {}
+                Err(_) if conn.dialect.has_external_support() => {
+                    let fallback = fallback_postgres_tables_query(pattern.as_deref());
+                    run_and_display_meta_query(conn, state, &fallback).await?;
+                }
+                Err(e) => return Err(e),
+            }
         }
         MetaCommand::ListViews(pattern) => {
             let sql = conn.dialect.list_views_query(pattern.as_deref());
@@ -292,8 +308,49 @@ async fn run_and_display_meta_query(
     let rows = conn.client.query(sql, &[]).await?;
     let duration = start.elapsed();
     let res = QueryResult::from_rows(&rows, duration, None, &state.null_str);
-    res.display(state.format, state.timing, state.tuples_only, state.border, true)?;
+    res.display(state.format, state.timing, state.tuples_only, state.border, state.pager)?;
     Ok(())
+}
+
+fn fallback_postgres_tables_query(pattern: Option<&str>) -> String {
+    let base = "SELECT \
+        n.nspname AS \"Schema\", \
+        c.relname AS \"Name\", \
+        CASE c.relkind \
+            WHEN 'r' THEN 'table' \
+            WHEN 'v' THEN 'view' \
+            ELSE 'other' \
+        END AS \"Type\", \
+        pg_catalog.pg_get_userbyid(c.relowner) AS \"Owner\" \
+     FROM pg_catalog.pg_class c \
+     LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+     WHERE c.relkind IN ('r', 'v')";
+
+    if let Some(p) = pattern {
+        let pat = p.replace('*', "%");
+        if pat == "%" || pat == "%.%" {
+            format!("{} AND n.nspname NOT LIKE 'pg_temp_%' ORDER BY 1, 2;", base)
+        } else if pat.contains('.') {
+            let parts: Vec<&str> = pat.splitn(2, '.').collect();
+            format!(
+                "{} AND n.nspname ILIKE '{}' AND c.relname ILIKE '{}' ORDER BY 1, 2;",
+                base, parts[0], parts[1]
+            )
+        } else {
+            format!(
+                "{} AND n.nspname !~ '^pg_' AND n.nspname <> 'information_schema' \
+                   AND c.relname ILIKE '{}' \
+                 ORDER BY 1, 2;",
+                base, pat
+            )
+        }
+    } else {
+        format!(
+            "{} AND n.nspname !~ '^pg_' AND n.nspname <> 'information_schema' \
+             ORDER BY 1, 2;",
+            base
+        )
+    }
 }
 
 async fn describe_target(
@@ -318,7 +375,7 @@ async fn describe_target(
                             .bold()
                     );
                     let res = QueryResult::from_rows(&rows, Duration::from_millis(0), None, &state.null_str);
-                    res.display(state.format, state.timing, state.tuples_only, state.border, false)?;
+                    res.display(state.format, state.timing, state.tuples_only, state.border, PagerMode::Off)?;
 
                     // Also show partition location
                     if let Some(part_sql) = conn.dialect.list_external_partitions_query(schema, table) {
@@ -326,7 +383,7 @@ async fn describe_target(
                             if !part_rows.is_empty() {
                                 println!("\n{}", "Sample External Partitions:".cyan());
                                 let part_res = QueryResult::from_rows(&part_rows, Duration::from_millis(0), None, &state.null_str);
-                                part_res.display(state.format, false, state.tuples_only, state.border, false)?;
+                                part_res.display(state.format, false, state.tuples_only, state.border, PagerMode::Off)?;
                             }
                         }
                     }
@@ -352,7 +409,7 @@ async fn describe_target(
                 };
                 println!("{}", format!("Table \"{}\":", full_name).cyan().bold());
                 let res = QueryResult::from_rows(&rows, Duration::from_millis(0), None, &state.null_str);
-                res.display(state.format, state.timing, state.tuples_only, state.border, false)?;
+                res.display(state.format, state.timing, state.tuples_only, state.border, PagerMode::Off)?;
             }
         }
         Err(e) => {
@@ -519,6 +576,37 @@ pub fn handle_pset(opt: &str, val: Option<&str>, state: &mut AppState) {
             } else {
                 state.format = OutputFormat::Aligned;
                 println!("Expanded display is off.");
+            }
+        }
+        "pager" => {
+            if let Some(v) = val {
+                match v.to_lowercase().as_str() {
+                    "always" => {
+                        state.pager = PagerMode::Always;
+                        println!("Pager is always used.");
+                    }
+                    "on" | "1" | "auto" | "true" | "yes" => {
+                        state.pager = PagerMode::On;
+                        println!("Pager is used for long output.");
+                    }
+                    "off" | "0" | "false" | "no" => {
+                        state.pager = PagerMode::Off;
+                        println!("Pager is off.");
+                    }
+                    _ => {
+                        println!("Unrecognized \\pset pager option: {} (expected: on, off, always).", v);
+                    }
+                }
+            } else {
+                state.pager = match state.pager {
+                    PagerMode::Off => PagerMode::On,
+                    _ => PagerMode::Off,
+                };
+                match state.pager {
+                    PagerMode::Off => println!("Pager is off."),
+                    PagerMode::On => println!("Pager is used for long output."),
+                    PagerMode::Always => println!("Pager is always used."),
+                }
             }
         }
         _ => {
