@@ -39,12 +39,12 @@ fn test_redshift_dialect_queries() {
     let part_sql = dialect.list_external_partitions_query(Some("ext_schema"), "events").unwrap();
     assert!(part_sql.contains("svv_external_partitions"));
 
-    // Local table describe uses pg_table_def with Redshift distkey & sortkey
+    // Local table describe uses pg_attribute with Redshift distkey, sortkey & encoding
     let local_desc = dialect.describe_table_query(Some("public"), "users");
-    assert!(local_desc.contains("pg_table_def"));
-    assert!(local_desc.contains("distkey"));
-    assert!(local_desc.contains("sortkey"));
-    assert!(local_desc.contains("encoding"));
+    assert!(local_desc.contains("pg_attribute"));
+    assert!(local_desc.contains("DistKey"));
+    assert!(local_desc.contains("SortKey"));
+    assert!(local_desc.contains("Encoding"));
 
     // Data shares query
     let ds_sql = dialect.list_datashares_query().unwrap();

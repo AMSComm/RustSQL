@@ -117,7 +117,9 @@ pub fn parse_meta_command(line: &str) -> Option<MetaCommand> {
         "ds" => Some(MetaCommand::ListDatashares),
         "d" | "d+" => {
             if let Some(target) = args.first() {
-                if target.contains('.') {
+                if target.contains('*') || target.contains('?') {
+                    Some(MetaCommand::ListTables(Some(target.to_string())))
+                } else if target.contains('.') {
                     let parts: Vec<&str> = target.splitn(2, '.').collect();
                     Some(MetaCommand::Describe(Some(parts[0].to_string()), parts[1].to_string()))
                 } else {
@@ -361,7 +363,60 @@ async fn describe_target(
     schema: Option<&str>,
     table: &str,
 ) -> Result<()> {
-    // If Redshift, first check if it's an external table
+    // 1. Try dialect describe table query
+    let local_sql = conn.dialect.describe_table_query(schema, table);
+    match conn.client.query(&local_sql, &[]).await {
+        Ok(rows) if !rows.is_empty() => {
+            let full_name = match schema {
+                Some(s) => format!("{}.{}", s, table),
+                None => table.to_string(),
+            };
+            println!("{}", format!("Table \"{}\":", full_name).cyan().bold());
+            let res = QueryResult::from_rows(&rows, Duration::from_millis(0), None, &state.null_str);
+            res.display(state.format, state.timing, state.tuples_only, state.border, PagerMode::Off, state.expanded)?;
+            return Ok(());
+        }
+        _ => {}
+    }
+
+    // 2. Fallback: Pure postgres catalog query (works on any PG and Redshift without dialect-specific columns)
+    let schema_filter = if let Some(s) = schema {
+        format!("AND (n.nspname = lower('{}') OR n.nspname = '{}' OR n.nspname ILIKE '{}')", s, s, s)
+    } else {
+        "AND n.nspname NOT IN ('pg_catalog', 'information_schema') AND n.nspname NOT LIKE 'pg_temp_%'".to_string()
+    };
+    let fallback_sql = format!(
+        "SELECT \
+            a.attname AS \"Column\", \
+            pg_catalog.format_type(a.atttypid, a.atttypmod) AS \"Type\", \
+            CASE WHEN a.attnotnull THEN 'not null' ELSE '' END AS \"Nullable\", \
+            COALESCE(pg_catalog.pg_get_expr(d.adbin, d.adrelid), '') AS \"Default\" \
+         FROM pg_catalog.pg_attribute a \
+         JOIN pg_catalog.pg_class c ON c.oid = a.attrelid \
+         JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+         LEFT JOIN pg_catalog.pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum \
+         WHERE (c.relname = lower('{}') OR c.relname = '{}' OR c.relname ILIKE '{}') \
+           {} \
+           AND a.attnum > 0 AND NOT a.attisdropped \
+         ORDER BY \
+            CASE WHEN pg_catalog.pg_table_is_visible(c.oid) THEN 0 ELSE 1 END, \
+            a.attnum;",
+        table, table, table, schema_filter
+    );
+    if let Ok(rows) = conn.client.query(&fallback_sql, &[]).await {
+        if !rows.is_empty() {
+            let full_name = match schema {
+                Some(s) => format!("{}.{}", s, table),
+                None => table.to_string(),
+            };
+            println!("{}", format!("Table \"{}\":", full_name).cyan().bold());
+            let res = QueryResult::from_rows(&rows, Duration::from_millis(0), None, &state.null_str);
+            res.display(state.format, state.timing, state.tuples_only, state.border, PagerMode::Off, state.expanded)?;
+            return Ok(());
+        }
+    }
+
+    // 3. If Redshift, check external tables (Spectrum / Athena / Lakehouse)
     if conn.dialect.has_external_support() {
         if let Some(ext_sql) = conn.dialect.describe_external_table_query(schema, table) {
             if let Ok(rows) = conn.client.query(&ext_sql, &[]).await {
@@ -393,18 +448,38 @@ async fn describe_target(
                 }
             }
         }
-    }
 
-    // Local table
-    let local_sql = conn.dialect.describe_table_query(schema, table);
-    match conn.client.query(&local_sql, &[]).await {
-        Ok(rows) => {
-            if rows.is_empty() {
-                println!(
-                    "{}",
-                    format!("Did not find any relation named \"{}\".", table).yellow()
-                );
-            } else {
+        // Also check svv_all_columns for Redshift (unifies local, view, external)
+        let svv_sql = match schema {
+            Some(s) => format!(
+                "SELECT \
+                    column_name AS \"Column\", \
+                    data_type AS \"Type\", \
+                    CASE WHEN is_nullable = 'NO' THEN 'not null' ELSE '' END AS \"Nullable\", \
+                    COALESCE(column_default, '') AS \"Default\" \
+                 FROM svv_all_columns \
+                 WHERE (table_name = lower('{}') OR table_name = '{}' OR table_name ILIKE '{}') \
+                   AND (schema_name = lower('{}') OR schema_name = '{}' OR schema_name ILIKE '{}') \
+                 ORDER BY ordinal_position;",
+                table, table, table, s, s, s
+            ),
+            None => format!(
+                "SELECT \
+                    schema_name AS \"Schema\", \
+                    column_name AS \"Column\", \
+                    data_type AS \"Type\", \
+                    CASE WHEN is_nullable = 'NO' THEN 'not null' ELSE '' END AS \"Nullable\", \
+                    COALESCE(column_default, '') AS \"Default\" \
+                 FROM svv_all_columns \
+                 WHERE (table_name = lower('{}') OR table_name = '{}' OR table_name ILIKE '{}') \
+                   AND schema_name NOT IN ('pg_catalog', 'information_schema') \
+                   AND schema_name NOT LIKE 'pg_temp_%' \
+                 ORDER BY schema_name, ordinal_position;",
+                table, table, table
+            ),
+        };
+        if let Ok(rows) = conn.client.query(&svv_sql, &[]).await {
+            if !rows.is_empty() {
                 let full_name = match schema {
                     Some(s) => format!("{}.{}", s, table),
                     None => table.to_string(),
@@ -412,12 +487,16 @@ async fn describe_target(
                 println!("{}", format!("Table \"{}\":", full_name).cyan().bold());
                 let res = QueryResult::from_rows(&rows, Duration::from_millis(0), None, &state.null_str);
                 res.display(state.format, state.timing, state.tuples_only, state.border, PagerMode::Off, state.expanded)?;
+                return Ok(());
             }
         }
-        Err(e) => {
-            eprintln!("{}", format!("Error describing relation: {}", e).red());
-        }
     }
+
+    // 4. Not found
+    println!(
+        "{}",
+        format!("Did not find any relation named \"{}\".", table).yellow()
+    );
 
     Ok(())
 }

@@ -149,9 +149,9 @@ impl Dialect for PostgresDialect {
 
     fn describe_table_query(&self, schema: Option<&str>, table: &str) -> String {
         let schema_filter = if let Some(s) = schema {
-            format!("AND n.nspname = '{}'", s)
+            format!("AND (n.nspname = lower('{}') OR n.nspname = '{}' OR n.nspname ILIKE '{}')", s, s, s)
         } else {
-            "AND pg_catalog.pg_table_is_visible(c.oid)".to_string()
+            "AND n.nspname NOT IN ('pg_catalog', 'information_schema') AND n.nspname NOT LIKE 'pg_temp_%'".to_string()
         };
 
         format!(
@@ -164,10 +164,12 @@ impl Dialect for PostgresDialect {
              JOIN pg_catalog.pg_class c ON c.oid = a.attrelid \
              JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
              LEFT JOIN pg_catalog.pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum \
-             WHERE c.relname = '{}' {} \
+             WHERE (c.relname = lower('{}') OR c.relname = '{}' OR c.relname ILIKE '{}') {} \
                AND a.attnum > 0 AND NOT a.attisdropped \
-             ORDER BY a.attnum;",
-            table, schema_filter
+             ORDER BY \
+                CASE WHEN pg_catalog.pg_table_is_visible(c.oid) THEN 0 ELSE 1 END, \
+                a.attnum;",
+            table, table, table, schema_filter
         )
     }
 

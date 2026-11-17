@@ -128,37 +128,44 @@ impl Dialect for RedshiftDialect {
     }
 
     fn describe_table_query(&self, schema: Option<&str>, table: &str) -> String {
-        // Redshift local table definition with encoding, distkey and sortkey
-        if let Some(s) = schema {
-            format!(
-                "SELECT \
-                    \"column\" AS \"Column\", \
-                    type AS \"Type\", \
-                    encoding AS \"Encoding\", \
-                    CASE WHEN distkey THEN 'true' ELSE 'false' END AS \"DistKey\", \
-                    CASE WHEN sortkey != 0 THEN sortkey::text ELSE '' END AS \"SortKey\", \
-                    CASE WHEN \"notnull\" THEN 'not null' ELSE '' END AS \"Nullable\" \
-                 FROM pg_table_def \
-                 WHERE schemaname = '{}' AND tablename = '{}' \
-                 ORDER BY \"column\";",
-                s, table
-            )
+        let schema_filter = if let Some(s) = schema {
+            format!("AND (n.nspname = lower('{}') OR n.nspname = '{}' OR n.nspname ILIKE '{}')", s, s, s)
         } else {
-            format!(
-                "SELECT \
-                    schemaname AS \"Schema\", \
-                    \"column\" AS \"Column\", \
-                    type AS \"Type\", \
-                    encoding AS \"Encoding\", \
-                    CASE WHEN distkey THEN 'true' ELSE 'false' END AS \"DistKey\", \
-                    CASE WHEN sortkey != 0 THEN sortkey::text ELSE '' END AS \"SortKey\", \
-                    CASE WHEN \"notnull\" THEN 'not null' ELSE '' END AS \"Nullable\" \
-                 FROM pg_table_def \
-                 WHERE tablename = '{}' \
-                 ORDER BY schemaname, \"column\";",
-                table
-            )
-        }
+            "AND n.nspname NOT IN ('pg_catalog', 'information_schema') AND n.nspname NOT LIKE 'pg_temp_%'".to_string()
+        };
+
+        format!(
+            "SELECT \
+                a.attname AS \"Column\", \
+                pg_catalog.format_type(a.atttypid, a.atttypmod) AS \"Type\", \
+                CASE WHEN a.attencodingtype = 0 THEN 'none' \
+                     WHEN a.attencodingtype = 1 THEN 'raw' \
+                     WHEN a.attencodingtype = 2 THEN 'bytedict' \
+                     WHEN a.attencodingtype = 3 THEN 'delta' \
+                     WHEN a.attencodingtype = 4 THEN 'lzo' \
+                     WHEN a.attencodingtype = 5 THEN 'runlength' \
+                     WHEN a.attencodingtype = 6 THEN 'text255' \
+                     WHEN a.attencodingtype = 7 THEN 'text32k' \
+                     WHEN a.attencodingtype = 8 THEN 'zstd' \
+                     WHEN a.attencodingtype = 9 THEN 'az64' \
+                     ELSE a.attencodingtype::text \
+                END AS \"Encoding\", \
+                CASE WHEN a.attisdistkey THEN 'true' ELSE 'false' END AS \"DistKey\", \
+                CASE WHEN a.attsortkeyord != 0 THEN a.attsortkeyord::text ELSE '' END AS \"SortKey\", \
+                CASE WHEN a.attnotnull THEN 'not null' ELSE '' END AS \"Nullable\", \
+                COALESCE(pg_catalog.pg_get_expr(d.adbin, d.adrelid), '') AS \"Default\" \
+             FROM pg_catalog.pg_attribute a \
+             JOIN pg_catalog.pg_class c ON c.oid = a.attrelid \
+             JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+             LEFT JOIN pg_catalog.pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum \
+             WHERE (c.relname = lower('{}') OR c.relname = '{}' OR c.relname ILIKE '{}') \
+               {} \
+               AND a.attnum > 0 AND NOT a.attisdropped \
+             ORDER BY \
+                CASE WHEN pg_catalog.pg_table_is_visible(c.oid) THEN 0 ELSE 1 END, \
+                a.attnum;",
+            table, table, table, schema_filter
+        )
     }
 
     fn describe_external_table_query(&self, schema: Option<&str>, table: &str) -> Option<String> {
