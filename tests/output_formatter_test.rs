@@ -159,3 +159,42 @@ fn test_visual_lines_calculation() {
     // Empty content -> 0 lines
     assert_eq!(calculate_visual_lines("", 80), 0);
 }
+
+#[test]
+fn test_split_statements_complex() {
+    use rsql::output::split_statements;
+
+    let sql = r#"
+        CREATE TABLE t1 (id int);
+        INSERT INTO t1 VALUES (1, 'val;with;semicolon');
+        INSERT INTO t1 VALUES (2, "quoted;name");
+        -- Comment with ; inside
+        INSERT INTO t1 VALUES (3, $$dollar;quoted$$);
+        /* Block comment with ; inside */
+        SELECT * FROM t1;
+    "#;
+
+    let stmts = split_statements(sql);
+    assert_eq!(stmts.len(), 5);
+    assert!(stmts[0].starts_with("CREATE TABLE"));
+    assert!(stmts[1].contains("'val;with;semicolon'"));
+    assert!(stmts[2].contains("\"quoted;name\""));
+    assert!(stmts[3].contains("$$dollar;quoted$$"));
+    assert!(stmts[4].contains("SELECT * FROM t1"));
+}
+
+#[test]
+fn test_extract_command_tag() {
+    use rsql::output::extract_command_tag;
+
+    assert_eq!(extract_command_tag("CREATE TABLE t1 (id int)", 0), "CREATE TABLE");
+    assert_eq!(extract_command_tag("CREATE VIEW v1 AS SELECT 1", 0), "CREATE VIEW");
+    assert_eq!(extract_command_tag("CREATE INDEX idx ON t1 (id)", 0), "CREATE INDEX");
+    assert_eq!(extract_command_tag("INSERT INTO t1 VALUES (1)", 1), "INSERT 0 1");
+    assert_eq!(extract_command_tag("UPDATE t1 SET id = 2", 5), "UPDATE 5");
+    assert_eq!(extract_command_tag("DELETE FROM t1", 3), "DELETE 3");
+    assert_eq!(extract_command_tag("DROP TABLE t1", 0), "DROP TABLE");
+    assert_eq!(extract_command_tag("ALTER TABLE t1 ADD col int", 0), "ALTER TABLE");
+    assert_eq!(extract_command_tag("SELECT * FROM t1", 10), "SELECT");
+    assert_eq!(extract_command_tag("-- comment\nINSERT INTO t1 VALUES (1)", 1), "INSERT 0 1");
+}

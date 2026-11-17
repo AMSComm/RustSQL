@@ -94,4 +94,12 @@ fn test_pset_options() {
     assert_eq!(state.pager, rsql::meta::PagerMode::Off);
     handle_pset("pager", Some("on"), &mut state);
     assert_eq!(state.pager, rsql::meta::PagerMode::On);
+
+    // Test \pset expanded
+    handle_pset("expanded", Some("on"), &mut state);
+    assert_eq!(state.expanded, rsql::meta::ExpandedMode::On);
+    handle_pset("expanded", Some("auto"), &mut state);
+    assert_eq!(state.expanded, rsql::meta::ExpandedMode::Auto);
+    handle_pset("expanded", Some("off"), &mut state);
+    assert_eq!(state.expanded, rsql::meta::ExpandedMode::Off);
 }

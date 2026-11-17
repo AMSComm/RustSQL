@@ -199,15 +199,22 @@ pub async fn run_interactive_repl(
 }
 
 pub async fn preload_cache(conn: &DbConnection, completer: &SqlCompleter) {
-    let mut tables = Vec::new();
-    let mut schemas = Vec::new();
-    let mut views = Vec::new();
-    let mut databases = Vec::new();
-    let mut columns = Vec::new();
-
-    // 1. Tables
     let tbl_sql = conn.dialect.list_tables_query(None);
-    if let Ok(rows) = conn.client.query(&tbl_sql, &[]).await {
+    let view_sql = conn.dialect.list_views_query(None);
+    let schema_sql = conn.dialect.list_schemas_query(None);
+    let db_sql = conn.dialect.list_databases_query();
+    let col_sql = "SELECT DISTINCT attname FROM pg_attribute WHERE attnum > 0 AND NOT attisdropped ORDER BY 1 LIMIT 500;";
+
+    let (res_tbl, res_view, res_schema, res_db, res_col) = tokio::join!(
+        conn.client.query(&tbl_sql, &[]),
+        conn.client.query(&view_sql, &[]),
+        conn.client.query(&schema_sql, &[]),
+        conn.client.query(db_sql, &[]),
+        conn.client.query(col_sql, &[]),
+    );
+
+    let mut tables = Vec::new();
+    if let Ok(rows) = res_tbl {
         for r in rows {
             let schema: Option<String> = r.try_get(0).ok();
             let name: Option<String> = r.try_get(1).ok();
@@ -220,9 +227,8 @@ pub async fn preload_cache(conn: &DbConnection, completer: &SqlCompleter) {
         }
     }
 
-    // 2. Views
-    let view_sql = conn.dialect.list_views_query(None);
-    if let Ok(rows) = conn.client.query(&view_sql, &[]).await {
+    let mut views = Vec::new();
+    if let Ok(rows) = res_view {
         for r in rows {
             let schema: Option<String> = r.try_get(0).ok();
             let name: Option<String> = r.try_get(1).ok();
@@ -235,9 +241,8 @@ pub async fn preload_cache(conn: &DbConnection, completer: &SqlCompleter) {
         }
     }
 
-    // 3. Schemas
-    let schema_sql = conn.dialect.list_schemas_query(None);
-    if let Ok(rows) = conn.client.query(&schema_sql, &[]).await {
+    let mut schemas = Vec::new();
+    if let Ok(rows) = res_schema {
         for r in rows {
             if let Ok(s) = r.try_get::<_, String>(0) {
                 schemas.push(s);
@@ -245,9 +250,8 @@ pub async fn preload_cache(conn: &DbConnection, completer: &SqlCompleter) {
         }
     }
 
-    // 4. Databases
-    let db_sql = conn.dialect.list_databases_query();
-    if let Ok(rows) = conn.client.query(db_sql, &[]).await {
+    let mut databases = Vec::new();
+    if let Ok(rows) = res_db {
         for r in rows {
             if let Ok(db) = r.try_get::<_, String>(0) {
                 databases.push(db);
@@ -255,9 +259,8 @@ pub async fn preload_cache(conn: &DbConnection, completer: &SqlCompleter) {
         }
     }
 
-    // 5. Columns
-    let col_sql = "SELECT DISTINCT attname FROM pg_attribute WHERE attnum > 0 AND NOT attisdropped ORDER BY 1 LIMIT 500;";
-    if let Ok(rows) = conn.client.query(col_sql, &[]).await {
+    let mut columns = Vec::new();
+    if let Ok(rows) = res_col {
         for r in rows {
             if let Ok(c) = r.try_get::<_, String>(0) {
                 columns.push(c);

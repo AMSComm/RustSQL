@@ -12,6 +12,13 @@ pub enum PagerMode {
     Always,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExpandedMode {
+    Off,
+    On,
+    Auto,
+}
+
 pub struct AppState {
     pub format: OutputFormat,
     pub timing: bool,
@@ -24,6 +31,7 @@ pub struct AppState {
     pub last_query: String,
     pub vars: std::collections::HashMap<String, String>,
     pub pager: PagerMode,
+    pub expanded: ExpandedMode,
 }
 
 impl Default for AppState {
@@ -40,6 +48,7 @@ impl Default for AppState {
             last_query: String::new(),
             vars: std::collections::HashMap::new(),
             pager: PagerMode::On,
+            expanded: ExpandedMode::Off,
         }
     }
 }
@@ -57,7 +66,7 @@ pub enum MetaCommand {
     ListDatashares,
     Describe(Option<String>, String),
     ListUsers,
-    ToggleExpanded(Option<bool>),
+    ToggleExpanded(Option<String>),
     ToggleTiming(Option<bool>),
     ToggleTuplesOnly(Option<bool>),
     Connect(String, Option<String>, Option<String>, Option<u16>),
@@ -120,7 +129,7 @@ pub fn parse_meta_command(line: &str) -> Option<MetaCommand> {
             }
         }
         "du" | "du+" | "dg" | "dg+" => Some(MetaCommand::ListUsers),
-        "x" => Some(MetaCommand::ToggleExpanded(parse_bool_arg(args.first().copied()))),
+        "x" => Some(MetaCommand::ToggleExpanded(args.first().map(|s| s.to_string()))),
         "timing" => Some(MetaCommand::ToggleTiming(parse_bool_arg(args.first().copied()))),
         "t" => Some(MetaCommand::ToggleTuplesOnly(parse_bool_arg(args.first().copied()))),
         "c" | "connect" => {
@@ -228,15 +237,8 @@ pub async fn execute_meta_command(
             let sql = conn.dialect.list_users_query();
             run_and_display_meta_query(conn, state, sql).await?;
         }
-        MetaCommand::ToggleExpanded(explicit) => {
-            let next = explicit.unwrap_or(state.format != OutputFormat::Expanded);
-            if next {
-                state.format = OutputFormat::Expanded;
-                println!("Expanded display is on.");
-            } else {
-                state.format = OutputFormat::Aligned;
-                println!("Expanded display is off.");
-            }
+        MetaCommand::ToggleExpanded(val) => {
+            handle_expanded(val.as_deref(), state);
         }
         MetaCommand::ToggleTiming(explicit) => {
             state.timing = explicit.unwrap_or(!state.timing);
@@ -308,7 +310,7 @@ async fn run_and_display_meta_query(
     let rows = conn.client.query(sql, &[]).await?;
     let duration = start.elapsed();
     let res = QueryResult::from_rows(&rows, duration, None, &state.null_str);
-    res.display(state.format, state.timing, state.tuples_only, state.border, state.pager)?;
+    res.display(state.format, state.timing, state.tuples_only, state.border, state.pager, state.expanded)?;
     Ok(())
 }
 
@@ -375,7 +377,7 @@ async fn describe_target(
                             .bold()
                     );
                     let res = QueryResult::from_rows(&rows, Duration::from_millis(0), None, &state.null_str);
-                    res.display(state.format, state.timing, state.tuples_only, state.border, PagerMode::Off)?;
+                    res.display(state.format, state.timing, state.tuples_only, state.border, PagerMode::Off, state.expanded)?;
 
                     // Also show partition location
                     if let Some(part_sql) = conn.dialect.list_external_partitions_query(schema, table) {
@@ -383,7 +385,7 @@ async fn describe_target(
                             if !part_rows.is_empty() {
                                 println!("\n{}", "Sample External Partitions:".cyan());
                                 let part_res = QueryResult::from_rows(&part_rows, Duration::from_millis(0), None, &state.null_str);
-                                part_res.display(state.format, false, state.tuples_only, state.border, PagerMode::Off)?;
+                                part_res.display(state.format, false, state.tuples_only, state.border, PagerMode::Off, state.expanded)?;
                             }
                         }
                     }
@@ -409,7 +411,7 @@ async fn describe_target(
                 };
                 println!("{}", format!("Table \"{}\":", full_name).cyan().bold());
                 let res = QueryResult::from_rows(&rows, Duration::from_millis(0), None, &state.null_str);
-                res.display(state.format, state.timing, state.tuples_only, state.border, PagerMode::Off)?;
+                res.display(state.format, state.timing, state.tuples_only, state.border, PagerMode::Off, state.expanded)?;
             }
         }
         Err(e) => {
@@ -566,17 +568,7 @@ pub fn handle_pset(opt: &str, val: Option<&str>, state: &mut AppState) {
             }
         }
         "expanded" | "x" => {
-            let next = match val {
-                Some(_) => parse_bool_arg(val).unwrap_or(state.format != OutputFormat::Expanded),
-                None => state.format != OutputFormat::Expanded,
-            };
-            if next {
-                state.format = OutputFormat::Expanded;
-                println!("Expanded display is on.");
-            } else {
-                state.format = OutputFormat::Aligned;
-                println!("Expanded display is off.");
-            }
+            handle_expanded(val, state);
         }
         "pager" => {
             if let Some(v) = val {
@@ -656,6 +648,75 @@ fn handle_edit(filepath: Option<&str>, state: &mut AppState) -> Result<()> {
     Ok(())
 }
 
+pub fn handle_expanded(val: Option<&str>, state: &mut AppState) {
+    if let Some(v) = val {
+        match v.to_lowercase().as_str() {
+            "auto" => {
+                state.expanded = ExpandedMode::Auto;
+                println!("Expanded display is used automatically.");
+            }
+            "on" | "1" | "true" | "yes" => {
+                state.expanded = ExpandedMode::On;
+                println!("Expanded display is on.");
+            }
+            "off" | "0" | "false" | "no" => {
+                state.expanded = ExpandedMode::Off;
+                println!("Expanded display is off.");
+            }
+            _ => {
+                println!("Unrecognized \\x option: {} (expected: on, off, auto).", v);
+            }
+        }
+    } else {
+        state.expanded = match state.expanded {
+            ExpandedMode::Off => ExpandedMode::On,
+            _ => ExpandedMode::Off,
+        };
+        match state.expanded {
+            ExpandedMode::Off => println!("Expanded display is off."),
+            ExpandedMode::On => println!("Expanded display is on."),
+            ExpandedMode::Auto => println!("Expanded display is used automatically."),
+        }
+    }
+}
+
+pub async fn execute_script(
+    content: &str,
+    conn: &mut DbConnection,
+    state: &mut AppState,
+) -> Result<()> {
+    let mut pending_sql = String::new();
+
+    for line in content.lines() {
+        if state.echo_all {
+            println!("{}", line);
+        }
+
+        let trimmed = line.trim();
+        if trimmed.starts_with('\\') {
+            // Flush any pending SQL statements before executing meta command
+            if !pending_sql.trim().is_empty() {
+                let sql_to_run = std::mem::take(&mut pending_sql);
+                crate::output::execute_and_display_query(&conn.client, &sql_to_run, state, false).await?;
+            }
+
+            if let Some(meta) = parse_meta_command(trimmed) {
+                Box::pin(execute_meta_command(meta, conn, state)).await?;
+            }
+        } else {
+            pending_sql.push_str(line);
+            pending_sql.push('\n');
+        }
+    }
+
+    // Flush any remaining SQL statements
+    if !pending_sql.trim().is_empty() {
+        crate::output::execute_and_display_query(&conn.client, &pending_sql, state, false).await?;
+    }
+
+    Ok(())
+}
+
 async fn handle_include(
     filepath: &str,
     conn: &mut DbConnection,
@@ -665,19 +726,5 @@ async fn handle_include(
         .map_err(RsqlError::Io)?;
 
     println!("Executing script from \"{}\"...", filepath);
-    for stmt in content.split(';') {
-        let trimmed = stmt.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-
-        if trimmed.starts_with('\\') {
-            if let Some(meta) = parse_meta_command(trimmed) {
-                Box::pin(execute_meta_command(meta, conn, state)).await?;
-            }
-        } else if let Err(e) = crate::output::execute_and_display_query(&conn.client, trimmed, state, false).await {
-            eprintln!("{}", format!("Error: {}", e).red());
-        }
-    }
-    Ok(())
+    execute_script(&content, conn, state).await
 }

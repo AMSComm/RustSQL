@@ -142,3 +142,25 @@ pub fn format_table(result: &QueryResult, tuples_only: bool, border: u8) -> Resu
 
     Ok(out)
 }
+
+pub fn estimate_table_width(result: &QueryResult, tuples_only: bool, border: u8) -> usize {
+    if result.columns.is_empty() {
+        return 0;
+    }
+    let num_cols = result.columns.len();
+    let mut total_w = 0;
+    for (col_idx, col_name) in result.columns.iter().enumerate() {
+        let mut max_w = if tuples_only { 0 } else { col_name.len() };
+        for row in &result.rows {
+            if let Some(val) = row.get(col_idx) {
+                max_w = max_w.max(val.len());
+            }
+        }
+        total_w += max_w;
+    }
+
+    match border {
+        0 => total_w + num_cols.saturating_sub(1),
+        _ => total_w + 1 + (num_cols * 3),
+    }
+}

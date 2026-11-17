@@ -6,7 +6,7 @@ pub mod pager;
 pub mod table;
 
 use crate::error::{Result, RsqlError};
-use crate::meta::{AppState, PagerMode};
+use crate::meta::{AppState, ExpandedMode, PagerMode};
 use std::time::{Duration, Instant};
 use tokio_postgres::{Client, Row, SimpleQueryMessage};
 
@@ -80,14 +80,33 @@ impl QueryResult {
         tuples_only: bool,
         border: u8,
         pager_mode: PagerMode,
+        expanded: ExpandedMode,
     ) -> Result<()> {
-        let output = match format {
-            OutputFormat::Aligned => table::format_table(self, tuples_only, border)?,
-            OutputFormat::Expanded => expanded::format_expanded(self)?,
-            OutputFormat::Csv => csv::format_csv(self, !tuples_only)?,
-            OutputFormat::Tsv => csv::format_tsv(self, !tuples_only)?,
-            OutputFormat::Json => json::format_json(self)?,
-            OutputFormat::Markdown => markdown::format_markdown(self)?,
+        let is_expanded = match expanded {
+            ExpandedMode::On => true,
+            ExpandedMode::Auto => {
+                if format == OutputFormat::Aligned {
+                    let term_w = crossterm::terminal::size().map(|(w, _)| w as usize).unwrap_or(80);
+                    let table_w = table::estimate_table_width(self, tuples_only, border);
+                    table_w > term_w
+                } else {
+                    false
+                }
+            }
+            ExpandedMode::Off => format == OutputFormat::Expanded,
+        };
+
+        let output = if is_expanded {
+            expanded::format_expanded(self)?
+        } else {
+            match format {
+                OutputFormat::Aligned => table::format_table(self, tuples_only, border)?,
+                OutputFormat::Expanded => expanded::format_expanded(self)?,
+                OutputFormat::Csv => csv::format_csv(self, !tuples_only)?,
+                OutputFormat::Tsv => csv::format_tsv(self, !tuples_only)?,
+                OutputFormat::Json => json::format_json(self)?,
+                OutputFormat::Markdown => markdown::format_markdown(self)?,
+            }
         };
 
         let mut final_output = output;
@@ -101,6 +120,237 @@ impl QueryResult {
     }
 }
 
+/// Split SQL into individual statements by semicolon, correctly respecting
+/// single quotes ('...'), double quotes ("..."), dollar quotes ($$...$$ or $tag$...$tag$),
+/// line comments (--), and block comments (/* ... */).
+pub fn split_statements(sql: &str) -> Vec<&str> {
+    let mut statements = Vec::new();
+    let bytes = sql.as_bytes();
+    let len = bytes.len();
+    let mut start = 0;
+    let mut i = 0;
+
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
+    let mut in_line_comment = false;
+    let mut block_comment_depth = 0;
+    let mut dollar_tag: Option<&str> = None;
+
+    while i < len {
+        if in_line_comment {
+            if bytes[i] == b'\n' {
+                in_line_comment = false;
+            }
+            i += 1;
+            continue;
+        }
+
+        if block_comment_depth > 0 {
+            if i + 1 < len && bytes[i] == b'*' && bytes[i + 1] == b'/' {
+                block_comment_depth -= 1;
+                i += 2;
+                continue;
+            } else if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'*' {
+                block_comment_depth += 1;
+                i += 2;
+                continue;
+            }
+            i += 1;
+            continue;
+        }
+
+        if let Some(tag) = dollar_tag {
+            if sql[i..].starts_with(tag) {
+                dollar_tag = None;
+                i += tag.len();
+            } else {
+                i += 1;
+            }
+            continue;
+        }
+
+        if in_single_quote {
+            if bytes[i] == b'\'' {
+                if i + 1 < len && bytes[i + 1] == b'\'' {
+                    i += 2; // escaped ''
+                    continue;
+                }
+                in_single_quote = false;
+            }
+            i += 1;
+            continue;
+        }
+
+        if in_double_quote {
+            if bytes[i] == b'"' {
+                if i + 1 < len && bytes[i + 1] == b'"' {
+                    i += 2; // escaped ""
+                    continue;
+                }
+                in_double_quote = false;
+            }
+            i += 1;
+            continue;
+        }
+
+        // Check for start of comments
+        if i + 1 < len && bytes[i] == b'-' && bytes[i + 1] == b'-' {
+            in_line_comment = true;
+            i += 2;
+            continue;
+        }
+
+        if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'*' {
+            block_comment_depth = 1;
+            i += 2;
+            continue;
+        }
+
+        // Check for quotes
+        if bytes[i] == b'\'' {
+            in_single_quote = true;
+            i += 1;
+            continue;
+        }
+
+        if bytes[i] == b'"' {
+            in_double_quote = true;
+            i += 1;
+            continue;
+        }
+
+        // Check for dollar-quoted strings: $tag$ or $$
+        if bytes[i] == b'$' {
+            if let Some(end_tag) = sql[i + 1..].find('$') {
+                let tag_candidate = &sql[i..=i + 1 + end_tag];
+                let inner = &tag_candidate[1..tag_candidate.len() - 1];
+                if inner.is_empty() || inner.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                    dollar_tag = Some(tag_candidate);
+                    i += tag_candidate.len();
+                    continue;
+                }
+            }
+        }
+
+        // Semicolon outside of any quote or comment marks end of statement
+        if bytes[i] == b';' {
+            let stmt = sql[start..i].trim();
+            if !stmt.is_empty() {
+                statements.push(stmt);
+            }
+            start = i + 1;
+        }
+
+        i += 1;
+    }
+
+    if start < len {
+        let stmt = sql[start..].trim();
+        if !stmt.is_empty() {
+            statements.push(stmt);
+        }
+    }
+
+    statements
+}
+
+/// Extract PostgreSQL command tag (e.g. "CREATE TABLE", "INSERT 0 1", "UPDATE 5")
+/// from statement text and row count.
+pub fn extract_command_tag(stmt: &str, rows_affected: u64) -> String {
+    let mut s = stmt.trim();
+    while s.starts_with("--") || s.starts_with("/*") {
+        if s.starts_with("--") {
+            if let Some(pos) = s.find('\n') {
+                s = s[pos + 1..].trim();
+            } else {
+                s = "";
+                break;
+            }
+        } else if s.starts_with("/*") {
+            if let Some(pos) = s.find("*/") {
+                s = s[pos + 2..].trim();
+            } else {
+                s = "";
+                break;
+            }
+        }
+    }
+
+    let upper = s.to_uppercase();
+    let words: Vec<&str> = upper.split_whitespace().collect();
+    let first = words.first().copied().unwrap_or("");
+    let second = words.get(1).copied().unwrap_or("");
+
+    match first {
+        "INSERT" => format!("INSERT 0 {}", rows_affected),
+        "UPDATE" => format!("UPDATE {}", rows_affected),
+        "DELETE" => format!("DELETE {}", rows_affected),
+        "SELECT" => "SELECT".to_string(),
+        "CREATE" => match second {
+            "TABLE" => "CREATE TABLE".to_string(),
+            "VIEW" => "CREATE VIEW".to_string(),
+            "INDEX" => "CREATE INDEX".to_string(),
+            "SCHEMA" => "CREATE SCHEMA".to_string(),
+            "DATABASE" => "CREATE DATABASE".to_string(),
+            "FUNCTION" => "CREATE FUNCTION".to_string(),
+            "PROCEDURE" => "CREATE PROCEDURE".to_string(),
+            "TRIGGER" => "CREATE TRIGGER".to_string(),
+            "TYPE" => "CREATE TYPE".to_string(),
+            "EXTENSION" => "CREATE EXTENSION".to_string(),
+            "SEQUENCE" => "CREATE SEQUENCE".to_string(),
+            "MATERIALIZED" => "CREATE MATERIALIZED VIEW".to_string(),
+            _ => "CREATE".to_string(),
+        },
+        "DROP" => match second {
+            "TABLE" => "DROP TABLE".to_string(),
+            "VIEW" => "DROP VIEW".to_string(),
+            "INDEX" => "DROP INDEX".to_string(),
+            "SCHEMA" => "DROP SCHEMA".to_string(),
+            "DATABASE" => "DROP DATABASE".to_string(),
+            "FUNCTION" => "DROP FUNCTION".to_string(),
+            "PROCEDURE" => "DROP PROCEDURE".to_string(),
+            "TRIGGER" => "DROP TRIGGER".to_string(),
+            "TYPE" => "DROP TYPE".to_string(),
+            "EXTENSION" => "DROP EXTENSION".to_string(),
+            "SEQUENCE" => "DROP SEQUENCE".to_string(),
+            "MATERIALIZED" => "DROP MATERIALIZED VIEW".to_string(),
+            _ => "DROP".to_string(),
+        },
+        "ALTER" => match second {
+            "TABLE" => "ALTER TABLE".to_string(),
+            "VIEW" => "ALTER VIEW".to_string(),
+            "INDEX" => "ALTER INDEX".to_string(),
+            "SCHEMA" => "ALTER SCHEMA".to_string(),
+            "DATABASE" => "ALTER DATABASE".to_string(),
+            "SEQUENCE" => "ALTER SEQUENCE".to_string(),
+            _ => "ALTER".to_string(),
+        },
+        "TRUNCATE" => "TRUNCATE TABLE".to_string(),
+        "VACUUM" => "VACUUM".to_string(),
+        "ANALYZE" => "ANALYZE".to_string(),
+        "EXPLAIN" => "EXPLAIN".to_string(),
+        "COPY" => format!("COPY {}", rows_affected),
+        "BEGIN" | "START" => "BEGIN".to_string(),
+        "COMMIT" | "END" => "COMMIT".to_string(),
+        "ROLLBACK" | "ABORT" => "ROLLBACK".to_string(),
+        "SET" => "SET".to_string(),
+        "RESET" => "RESET".to_string(),
+        "SHOW" => "SHOW".to_string(),
+        "GRANT" => "GRANT".to_string(),
+        "REVOKE" => "REVOKE".to_string(),
+        "LOCK" => "LOCK TABLE".to_string(),
+        "CALL" => "CALL".to_string(),
+        "DO" => "DO".to_string(),
+        _ => {
+            if first.is_empty() {
+                format!("{}", rows_affected)
+            } else {
+                first.to_string()
+            }
+        }
+    }
+}
+
 pub async fn execute_and_display_query(
     client: &Client,
     sql: &str,
@@ -111,6 +361,9 @@ pub async fn execute_and_display_query(
     let start = Instant::now();
     let messages = client.simple_query(sql).await.map_err(RsqlError::Database)?;
     let duration = start.elapsed();
+
+    let statements = split_statements(sql);
+    let mut stmt_idx = 0;
 
     let mut current_cols: Vec<String> = Vec::new();
     let mut current_rows: Vec<Vec<String>> = Vec::new();
@@ -132,10 +385,13 @@ pub async fn execute_and_display_query(
                 returned_any_row = true;
             }
             SimpleQueryMessage::CommandComplete(rows_affected) => {
+                let current_stmt = statements.get(stmt_idx).copied().unwrap_or("");
+                stmt_idx += 1;
+
                 if returned_any_row {
                     let res = QueryResult {
-                        columns: current_cols.clone(),
-                        rows: current_rows.clone(),
+                        columns: std::mem::take(&mut current_cols),
+                        rows: std::mem::take(&mut current_rows),
                         command_tag: None,
                         rows_affected: Some(rows_affected),
                         duration,
@@ -146,82 +402,28 @@ pub async fn execute_and_display_query(
                         state.tuples_only,
                         state.border,
                         pager_mode,
+                        state.expanded,
                     )?;
-                    current_cols.clear();
-                    current_rows.clear();
                     returned_any_row = false;
                 } else if !state.quiet && !state.tuples_only {
-                    // DDL or non-row statement: print standard psql command tag
-                    let upper = sql.trim().to_uppercase();
-                    let first_word = upper.split_whitespace().next().unwrap_or("");
-                    let cmd_tag = match first_word {
-                        "INSERT" => format!("INSERT 0 {}", rows_affected),
-                        "UPDATE" => format!("UPDATE {}", rows_affected),
-                        "DELETE" => format!("DELETE {}", rows_affected),
-                        "SELECT" => {
-                            // 0 rows returned
-                            let res = QueryResult {
-                                columns: current_cols.clone(),
-                                rows: Vec::new(),
-                                command_tag: None,
-                                rows_affected: Some(0),
-                                duration,
-                            };
-                            res.display(
-                                state.format,
-                                state.timing,
-                                state.tuples_only,
-                                state.border,
-                                pager_mode,
-                            )?;
-                            "".to_string()
-                        }
-                        "CREATE" => {
-                            if upper.starts_with("CREATE TABLE") {
-                                "CREATE TABLE".to_string()
-                            } else if upper.starts_with("CREATE VIEW") {
-                                "CREATE VIEW".to_string()
-                            } else if upper.starts_with("CREATE INDEX") {
-                                "CREATE INDEX".to_string()
-                            } else if upper.starts_with("CREATE SCHEMA") {
-                                "CREATE SCHEMA".to_string()
-                            } else if upper.starts_with("CREATE DATABASE") {
-                                "CREATE DATABASE".to_string()
-                            } else {
-                                "CREATE".to_string()
-                            }
-                        }
-                        "DROP" => {
-                            if upper.starts_with("DROP TABLE") {
-                                "DROP TABLE".to_string()
-                            } else if upper.starts_with("DROP VIEW") {
-                                "DROP VIEW".to_string()
-                            } else if upper.starts_with("DROP SCHEMA") {
-                                "DROP SCHEMA".to_string()
-                            } else if upper.starts_with("DROP DATABASE") {
-                                "DROP DATABASE".to_string()
-                            } else {
-                                "DROP".to_string()
-                            }
-                        }
-                        "ALTER" => {
-                            if upper.starts_with("ALTER TABLE") {
-                                "ALTER TABLE".to_string()
-                            } else {
-                                "ALTER".to_string()
-                            }
-                        }
-                        "SET" => "SET".to_string(),
-                        "RESET" => "RESET".to_string(),
-                        "BEGIN" => "BEGIN".to_string(),
-                        "COMMIT" => "COMMIT".to_string(),
-                        "ROLLBACK" => "ROLLBACK".to_string(),
-                        "VACUUM" => "VACUUM".to_string(),
-                        "TRUNCATE" => "TRUNCATE TABLE".to_string(),
-                        _ => first_word.to_string(),
-                    };
-
-                    if !cmd_tag.is_empty() {
+                    let cmd_tag = extract_command_tag(current_stmt, rows_affected);
+                    if cmd_tag == "SELECT" {
+                        let res = QueryResult {
+                            columns: std::mem::take(&mut current_cols),
+                            rows: Vec::new(),
+                            command_tag: None,
+                            rows_affected: Some(0),
+                            duration,
+                        };
+                        res.display(
+                            state.format,
+                            state.timing,
+                            state.tuples_only,
+                            state.border,
+                            pager_mode,
+                            state.expanded,
+                        )?;
+                    } else if !cmd_tag.is_empty() {
                         println!("{}", cmd_tag);
                         if state.timing {
                             println!("Time: {:.3} ms", duration.as_secs_f64() * 1000.0);

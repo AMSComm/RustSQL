@@ -57,6 +57,7 @@ async fn run_app(args: CliArgs) -> Result<()> {
         state.format = OutputFormat::Markdown;
     } else if args.expanded {
         state.format = OutputFormat::Expanded;
+        state.expanded = rsql::meta::ExpandedMode::On;
     }
 
     if args.no_header {
@@ -99,24 +100,7 @@ async fn run_app(args: CliArgs) -> Result<()> {
     // Mode 2: Run script from file (-f)
     if let Some(file_path) = &args.file {
         let content = fs::read_to_string(file_path)?;
-        for stmt in content.split(';') {
-            let trimmed = stmt.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-
-            if state.echo_all {
-                println!("{}", trimmed);
-            }
-
-            if trimmed.starts_with('\\') {
-                if let Some(meta) = parse_meta_command(trimmed) {
-                    execute_meta_command(meta, &mut conn, &mut state).await?;
-                }
-            } else {
-                execute_and_display_query(&conn.client, trimmed, &state, false).await?;
-            }
-        }
+        rsql::meta::execute_script(&content, &mut conn, &mut state).await?;
         return Ok(());
     }
 
