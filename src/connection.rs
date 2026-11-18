@@ -1,9 +1,67 @@
 use crate::config::{ConnectionConfig, SslMode};
 use crate::dialect::{create_dialect, Dialect, EngineDialect};
-use crate::error::{Result, RsqlError};
+use crate::error::{format_notice, Result, RsqlError};
 use native_tls::TlsConnector;
 use postgres_native_tls::MakeTlsConnector;
+use std::task::Poll;
 use tokio_postgres::{Client, NoTls};
+
+pub fn handle_notice(db_err: &tokio_postgres::error::DbError) {
+    eprintln!("{}", format_notice(db_err));
+}
+
+pub fn format_notification(channel: &str, payload: &str, pid: i32) -> String {
+    if payload.is_empty() {
+        format!(
+            "Asynchronous notification \"{}\" received from server process with PID {}.",
+            channel, pid
+        )
+    } else {
+        format!(
+            "Asynchronous notification \"{}\" with payload \"{}\" received from server process with PID {}.",
+            channel, payload, pid
+        )
+    }
+}
+
+pub fn handle_notification(notif: &tokio_postgres::Notification) {
+    eprintln!(
+        "{}",
+        format_notification(notif.channel(), notif.payload(), notif.process_id())
+    );
+}
+
+pub fn spawn_connection<S, T>(mut conn: tokio_postgres::Connection<S, T>)
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+    T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    tokio::spawn(async move {
+        let res: std::result::Result<(), tokio_postgres::Error> = std::future::poll_fn(|cx| {
+            while let Poll::Ready(msg) = conn.poll_message(cx)? {
+                match msg {
+                    Some(tokio_postgres::AsyncMessage::Notice(db_err)) => {
+                        handle_notice(&db_err);
+                    }
+                    Some(tokio_postgres::AsyncMessage::Notification(notif)) => {
+                        handle_notification(&notif);
+                    }
+                    Some(_) => {}
+                    None => return Poll::Ready(Ok(())),
+                }
+            }
+            Poll::Pending
+        })
+        .await;
+
+        if let Err(e) = res {
+            let err_str = e.to_string();
+            if !err_str.contains("closed") && !err_str.contains("broken pipe") {
+                eprintln!("Connection warning: {}", e);
+            }
+        }
+    });
+}
 
 pub struct DbConnection {
     pub client: Client,
@@ -206,11 +264,7 @@ impl DbConnection {
                 match do_connect(&pg_config, NoTls, timeout_dur).await {
                     ConnectResult::Ok(boxed) => {
                         let (client, conn) = *boxed;
-                        tokio::spawn(async move {
-                            if let Err(e) = conn.await {
-                                eprintln!("Connection warning: {}", e);
-                            }
-                        });
+                        spawn_connection(conn);
                         let v = query_version_string(&client).await?;
                         (client, v, false)
                     }
@@ -234,11 +288,7 @@ impl DbConnection {
                 match do_connect(&pg_config, connector, timeout_dur).await {
                     ConnectResult::Ok(boxed) => {
                         let (client, conn) = *boxed;
-                        tokio::spawn(async move {
-                            if let Err(e) = conn.await {
-                                eprintln!("Connection warning: {}", e);
-                            }
-                        });
+                        spawn_connection(conn);
                         let v = query_version_string(&client).await?;
                         (client, v, true)
                     }
@@ -262,11 +312,7 @@ impl DbConnection {
                 match do_connect(&pg_config, connector, timeout_dur).await {
                     ConnectResult::Ok(boxed) => {
                         let (client, conn) = *boxed;
-                        tokio::spawn(async move {
-                            if let Err(e) = conn.await {
-                                eprintln!("Connection warning: {}", e);
-                            }
-                        });
+                        spawn_connection(conn);
                         let v = query_version_string(&client).await?;
                         (client, v, true)
                     }
@@ -290,11 +336,7 @@ impl DbConnection {
                         match do_connect(&pg_config, NoTls, timeout_dur).await {
                             ConnectResult::Ok(boxed) => {
                                 let (client, conn) = *boxed;
-                                tokio::spawn(async move {
-                                    if let Err(e) = conn.await {
-                                        eprintln!("Connection warning: {}", e);
-                                    }
-                                });
+                                spawn_connection(conn);
                                 let v = query_version_string(&client).await?;
                                 (client, v, false)
                             }
@@ -319,11 +361,7 @@ impl DbConnection {
                 match do_connect(&pg_config, NoTls, timeout_dur).await {
                     ConnectResult::Ok(boxed) => {
                         let (client, conn) = *boxed;
-                        tokio::spawn(async move {
-                            if let Err(e) = conn.await {
-                                eprintln!("Connection warning: {}", e);
-                            }
-                        });
+                        spawn_connection(conn);
                         let v = query_version_string(&client).await?;
                         (client, v, false)
                     }
@@ -345,11 +383,7 @@ impl DbConnection {
                         match do_connect(&pg_config, connector, timeout_dur).await {
                             ConnectResult::Ok(boxed) => {
                                 let (client, conn) = *boxed;
-                                tokio::spawn(async move {
-                                    if let Err(e) = conn.await {
-                                        eprintln!("Connection warning: {}", e);
-                                    }
-                                });
+                                spawn_connection(conn);
                                 let v = query_version_string(&client).await?;
                                 (client, v, true)
                             }
@@ -470,5 +504,28 @@ pub fn parse_server_short_version(version_str: &str, is_redshift: bool) -> Strin
         format!("{} - Amazon Redshift", num_part)
     } else {
         num_part.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_format_notification_empty_payload() {
+        let msg = format_notification("my_channel", "", 12345);
+        assert_eq!(
+            msg,
+            "Asynchronous notification \"my_channel\" received from server process with PID 12345."
+        );
+    }
+
+    #[test]
+    fn test_format_notification_with_payload() {
+        let msg = format_notification("my_channel", "hello world", 12345);
+        assert_eq!(
+            msg,
+            "Asynchronous notification \"my_channel\" with payload \"hello world\" received from server process with PID 12345."
+        );
     }
 }
