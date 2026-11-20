@@ -102,8 +102,11 @@ pub fn display_with_builtin_pager(
     let mut visual_count = 0;
     let mut prompt_lines_needed = page_size;
 
+    let stdout_handle = stdout();
+    let mut out = stdout_handle.lock();
+
     while let Some(line) = lines.next() {
-        println!("{}", line);
+        writeln!(out, "{}", line)?;
 
         if show_all {
             continue;
@@ -129,14 +132,14 @@ pub fn display_with_builtin_pager(
             }
 
             let prompt = "--More-- [R: show all, Space: page, Enter: line, Q: quit]";
-            print!("{}", prompt);
-            let _ = stdout().flush();
+            write!(out, "{}", prompt)?;
+            out.flush()?;
 
             let action = read_pager_action();
 
             // Erase the prompt line cleanly (\r + erase line)
-            print!("\r\x1b[2K");
-            let _ = stdout().flush();
+            write!(out, "\r\x1b[2K")?;
+            out.flush()?;
 
             match action {
                 PagerAction::ShowAll => {
@@ -161,6 +164,7 @@ pub fn display_with_builtin_pager(
         }
     }
 
+    out.flush()?;
     Ok(())
 }
 

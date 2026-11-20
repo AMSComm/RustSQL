@@ -49,7 +49,10 @@ pub fn format_table(result: &QueryResult, tuples_only: bool, border: u8) -> Resu
         widths.push(max_w);
     }
 
-    let mut out = String::new();
+    // Pre-allocate buffer based on estimated row width to avoid reallocations on large datasets
+    let est_row_len = widths.iter().sum::<usize>() + (num_cols * 3) + 2;
+    let est_total_capacity = (result.rows.len() + 4) * est_row_len;
+    let mut out = String::with_capacity(est_total_capacity);
 
     // 1. Top border (only if border == 2 and not tuples_only)
     if border == 2 && !tuples_only {
