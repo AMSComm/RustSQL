@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Tag name for release (e.g. v0.1.0)'
-        required: true
-        default: 'v0.1.0'
+        description: 'Tag name for release (e.g. v0.0.1)'
+        required: false
+        default: ''
 
 permissions:
   contents: write
@@ -25,27 +25,27 @@ jobs:
           - target: aarch64-apple-darwin
             os: macos-latest
             use-cross: false
-            archive: tar.gz
           - target: x86_64-apple-darwin
-            os: macos-13
+            os: macos-latest
             use-cross: false
-            archive: tar.gz
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
             use-cross: false
-            archive: tar.gz
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
             use-cross: true
-            archive: tar.gz
           - target: x86_64-pc-windows-msvc
             os: windows-latest
             use-cross: false
-            archive: zip
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -58,70 +58,47 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y pkg-config libssl-dev
 
-      - name: Install Cross for cross-compilation
+      - name: Install Cross for ARM64 Linux
         if: matrix.use-cross
-        run: cargo install cross --git https://github.com/cross-rs/cross
+        uses: taiki-e/install-action@cross
 
       - name: Build release binary
+        shell: bash
         run: |
           if [ "${{ matrix.use-cross }}" = "true" ]; then
             cross build --release --target ${{ matrix.target }}
           else
             cargo build --release --target ${{ matrix.target }}
           fi
-        shell: bash
 
-      - name: Prepare packaging (Unix)
-        if: matrix.archive == 'tar.gz'
+      - name: Package release artifact
         shell: bash
         run: |
           TAG_NAME="${{ github.event.inputs.tag || github.ref_name }}"
-          BIN_PATH="target/${{ matrix.target }}/release/ruql"
-          strip "$BIN_PATH" || true
-          mkdir -p package
-          cp "$BIN_PATH" package/ruql
-          cp README.md package/ || true
-          cp LICENSE package/ || true
-          ARCHIVE_NAME="ruql-${TAG_NAME}-${{ matrix.target }}.tar.gz"
-          tar -czf "$ARCHIVE_NAME" -C package .
-          shasum -a 256 "$ARCHIVE_NAME" > "$ARCHIVE_NAME.sha256"
-          echo "ARCHIVE_PATH=$ARCHIVE_NAME" >> $GITHUB_ENV
-          echo "SHA_PATH=$ARCHIVE_NAME.sha256" >> $GITHUB_ENV
-
-      - name: Prepare packaging (Windows)
-        if: matrix.archive == 'zip'
-        shell: bash
-        run: |
-          TAG_NAME="${{ github.event.inputs.tag || github.ref_name }}"
-          BIN_PATH="target/${{ matrix.target }}/release/ruql.exe"
-          mkdir -p package
-          cp "$BIN_PATH" package/ruql.exe
-          cp README.md package/ || true
-          cp LICENSE package/ || true
-          ARCHIVE_NAME="ruql-${TAG_NAME}-${{ matrix.target }}.zip"
-          7z a "$ARCHIVE_NAME" ./package/*
-          shasum -a 256 "$ARCHIVE_NAME" > "$ARCHIVE_NAME.sha256"
-          echo "ARCHIVE_PATH=$ARCHIVE_NAME" >> $GITHUB_ENV
-          echo "SHA_PATH=$ARCHIVE_NAME.sha256" >> $GITHUB_ENV
+          python3 .github/workflows/package.py "${{ matrix.target }}" "$TAG_NAME"
 
       - name: Upload artifact to job
         uses: actions/upload-artifact@v4
         with:
           name: assets-${{ matrix.target }}
-          path: |
-            ruql-*
+          path: artifacts/*
 
   publish-release:
     name: Publish GitHub Release
     needs: build-release
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Download all built artifacts
         uses: actions/download-artifact@v4
         with:
+          pattern: assets-*
           path: artifacts
           merge-multiple: true
 
@@ -131,12 +108,64 @@ jobs:
           cd artifacts
           cat *.sha256 > checksums.txt || true
           rm -f *.sha256
+          echo "Aggregated checksums:"
+          cat checksums.txt
 
-      - name: Create GitHub Release
+      - name: Extract Release Notes from CHANGELOG.md
+        id: changelog
+        shell: bash
+        run: |
+          python3 -c "
+          import re, os
+          tag = os.environ.get('GITHUB_REF_NAME', '')
+          if not tag or tag == 'main':
+              tag = '${{ github.event.inputs.tag }}'
+          if not tag:
+              tag = 'v0.0.1'
+          notes = ''
+          try:
+              with open('CHANGELOG.md', 'r', encoding='utf-8') as f:
+                  content = f.read()
+              tag_escaped = re.escape(tag.lstrip('v'))
+              pattern = rf'(## \[[v]?{tag_escaped}\].*?)(?=\n## \[|\Z)'
+              match = re.search(pattern, content, re.DOTALL)
+              if match:
+                  notes = match.group(1).strip()
+          except Exception as e:
+              print(f'Error reading CHANGELOG.md: {e}')
+          if not notes:
+              notes = f'## RustSQL {tag}\n\nNext-generation PostgreSQL and Amazon Redshift CLI.'
+          with open('RELEASE_NOTES.md', 'w', encoding='utf-8') as out:
+              out.write(notes)
+          print('Extracted notes:')
+          print(notes)
+          "
+
+      - name: Create or Update GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.inputs.tag || github.ref_name }}
           name: RustSQL ${{ github.event.inputs.tag || github.ref_name }}
-          generate_release_notes: true
+          body_path: RELEASE_NOTES.md
           files: |
             artifacts/*
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Ensure Release Notes Synced
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          if [ -f RELEASE_NOTES.md ]; then
+            for i in {1..5}; do
+              if gh release edit "$TAG" --repo "${{ github.repository }}" --notes-file RELEASE_NOTES.md; then
+                echo "Successfully updated $TAG release notes on GitHub!"
+                break
+              fi
+              echo "Attempt $i failed. Retrying in 3s..."
+              sleep 3
+            done
+          fi

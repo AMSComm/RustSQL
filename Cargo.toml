@@ -22,7 +22,7 @@ clap = { version = "4.5", features = ["derive", "env"] }
 # Async runtime & DB
 tokio = { version = "1.43", features = ["full"] }
 tokio-postgres = { version = "0.7", features = ["with-chrono-0_4"] }
-native-tls = "0.2"
+native-tls = { version = "0.2", features = ["vendored"] }
 postgres-native-tls = "0.5"
 
 # REPL, Terminal & UI
