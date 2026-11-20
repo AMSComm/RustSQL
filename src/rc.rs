@@ -12,11 +12,16 @@ pub async fn load_startup_rc_files(
 ) {
     let mut files_to_try = Vec::new();
 
-    // 1. Check $PSQLRC environment variable
-    if let Ok(custom_rc) = env::var("PSQLRC") {
+    // 1. Check $RUQLRC or $PSQLRC environment variable
+    if let Ok(custom_rc) = env::var("RUQLRC").or_else(|_| env::var("PSQLRC")) {
         files_to_try.push(PathBuf::from(custom_rc));
     } else if let Some(home) = dirs::home_dir() {
-        // 2. Default search order: ~/.psqlrc, then ~/.redshiftrc (if Redshift), then ~/.rsqlrc
+        // 2. Default search order: ~/.ruqlrc, then ~/.psqlrc, then ~/.redshiftrc (if Redshift), then ~/.rsqlrc
+        let ruqlrc = home.join(".ruqlrc");
+        if ruqlrc.exists() {
+            files_to_try.push(ruqlrc);
+        }
+
         let psqlrc = home.join(".psqlrc");
         if psqlrc.exists() {
             files_to_try.push(psqlrc);

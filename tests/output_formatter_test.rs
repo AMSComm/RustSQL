@@ -1,9 +1,9 @@
-use rsql::output::csv::{format_csv, format_tsv};
-use rsql::output::expanded::format_expanded;
-use rsql::output::json::format_json;
-use rsql::output::markdown::format_markdown;
-use rsql::output::table::format_table;
-use rsql::output::QueryResult;
+use rustsql::output::csv::{format_csv, format_tsv};
+use rustsql::output::expanded::format_expanded;
+use rustsql::output::json::format_json;
+use rustsql::output::markdown::format_markdown;
+use rustsql::output::table::format_table;
+use rustsql::output::QueryResult;
 use std::time::Duration;
 
 fn sample_result() -> QueryResult {
@@ -142,7 +142,7 @@ fn test_markdown_formatting() {
 
 #[test]
 fn test_visual_lines_calculation() {
-    use rsql::output::pager::calculate_visual_lines;
+    use rustsql::output::pager::calculate_visual_lines;
 
     // 3 short lines on width 80 -> 3 visual lines
     let content = "line 1\nline 2\nline 3";
@@ -163,7 +163,7 @@ fn test_visual_lines_calculation() {
 #[test]
 fn test_parse_pager_key_actions() {
     use crossterm::event::{KeyCode, KeyModifiers};
-    use rsql::output::pager::{parse_pager_key, PagerAction};
+    use rustsql::output::pager::{parse_pager_key, PagerAction};
 
     // 'r' and 'R' trigger ShowAll ("bung ra het")
     assert_eq!(
@@ -226,7 +226,7 @@ fn test_parse_pager_key_actions() {
 
 #[test]
 fn test_split_statements_complex() {
-    use rsql::output::split_statements;
+    use rustsql::output::split_statements;
 
     let sql = r#"
         CREATE TABLE t1 (id int);
@@ -249,7 +249,7 @@ fn test_split_statements_complex() {
 
 #[test]
 fn test_extract_command_tag() {
-    use rsql::output::extract_command_tag;
+    use rustsql::output::extract_command_tag;
 
     assert_eq!(extract_command_tag("CREATE TABLE t1 (id int)", 0), "CREATE TABLE");
     assert_eq!(extract_command_tag("CREATE VIEW v1 AS SELECT 1", 0), "CREATE VIEW");

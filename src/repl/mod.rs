@@ -58,7 +58,7 @@ pub async fn run_interactive_repl(
     mut conn: DbConnection,
     mut state: AppState,
 ) -> Result<()> {
-    let history_path = dirs::home_dir().map(|h| h.join(".rsql_history"));
+    let history_path = dirs::home_dir().map(|h| h.join(".ruql_history"));
 
     let completer = SqlCompleter::new();
     let helper = RsqlHelper {
@@ -78,10 +78,20 @@ pub async fn run_interactive_repl(
     rl.set_helper(Some(helper));
 
     if let Some(ref path) = history_path {
-        let _ = rl.load_history(path);
+        if path.exists() {
+            let _ = rl.load_history(path);
+        } else if let Some(home) = dirs::home_dir() {
+            let rsql_hist = home.join(".rsql_history");
+            let psql_hist = home.join(".psql_history");
+            if rsql_hist.exists() {
+                let _ = rl.load_history(&rsql_hist);
+            } else if psql_hist.exists() {
+                let _ = rl.load_history(&psql_hist);
+            }
+        }
     }
 
-    // Print welcome banner (matching psql 17.4)
+    // Print welcome banner (matching psql 17.4 compatibility)
     let client_version = "17.4";
     let server_ver = crate::connection::parse_server_short_version(
         &conn.server_version,
@@ -94,6 +104,21 @@ pub async fn run_interactive_repl(
     }
     println!("Type \"help\" for help.");
     println!();
+
+    // Check for updates non-blockingly in background
+    tokio::spawn(async move {
+        if let Ok(Some(release)) = crate::updater::check_latest_release().await {
+            let cur = env!("CARGO_PKG_VERSION");
+            if crate::updater::is_newer_version(&release.tag_name, cur) {
+                eprintln!(
+                    "{} A new version of ruql is available: {} (current: v{}). Run \"ruql --update\" to update.\n",
+                    "[UPDATE]".yellow().bold(),
+                    release.tag_name.green().bold(),
+                    cur
+                );
+            }
+        }
+    });
 
     // Preload auto-complete cache
     preload_cache(&conn, &completer).await;

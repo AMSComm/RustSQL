@@ -1,24 +1,49 @@
-# rsql - Next-Generation PostgreSQL & Amazon Redshift CLI
+# RustSQL (ruql) - Next-Generation PostgreSQL & Amazon Redshift CLI
 
-A blazing-fast, dependency-free command-line interface (CLI) for **PostgreSQL** and **Amazon Redshift**, designed as a drop-in replacement and enhancement for `psql`.
+A blazing-fast, dependency-free command-line interface (CLI) for **PostgreSQL** and **Amazon Redshift**, designed as a modern drop-in replacement and enhancement for `psql`.
+
+- **Repository**: [https://github.com/AMSComm/RustSQL](https://github.com/AMSComm/RustSQL)
+- **Binary / Command**: `ruql` (with optional `psql` alias/symlink)
 
 ---
 
-## 🌟 Why rsql?
+## ⚡ Quick Install
+
+### macOS & Linux (One-line Installer)
+```bash
+curl -fsSL https://raw.githubusercontent.com/AMSComm/RustSQL/main/install.sh | bash
+```
+
+### Windows (PowerShell)
+```powershell
+irm https://raw.githubusercontent.com/AMSComm/RustSQL/main/install.ps1 | iex
+```
+
+### In-Place Auto Update
+To update `ruql` to the latest release at any time:
+```bash
+ruql --update
+```
+
+---
+
+## 🌟 Why RustSQL?
 
 Standard `psql` (especially versions 14 to 17) encounters severe issues in heterogeneous database environments:
 1. **Catalog Incompatibility**: Modern `psql` executes queries using catalog attributes (`c.relispartition`, `c.reloftype`, `pg_table_is_visible`) that cause syntax or catalog errors on **Amazon Redshift** (based on PostgreSQL 8.0.2 catalog) and older PostgreSQL versions (8.x, 9.x, 10, 11).
 2. **Blind to Redshift Lakehouse & External Tables**: Standard `psql` meta-commands (`\dt`, `\d`, `\dn`, `\l`) query standard `pg_class`, completely ignoring Redshift Spectrum external tables (S3/Glue/Hive), Data Sharing databases/schemas, and Federated queries to RDS/Aurora.
-3. **Heavyweight Dependencies**: Installing official `psql` requires PostgreSQL client packages or dynamic linking to `libpq`. `rsql` compiles into a **single, standalone, statically linked binary** (< 4MB) with **zero external dependencies**.
+3. **Heavyweight Dependencies**: Installing official `psql` requires PostgreSQL client packages or dynamic linking to `libpq`. `ruql` compiles into a **single, standalone binary** with **zero external dependencies**.
 
 ---
 
 ## 🚀 Key Features
 
-- **Zero-Dependency Single Binary**:
-  - Pure Rust PostgreSQL wire protocol (`tokio-postgres` + native TLS / rustls).
-  - Runs anywhere on **macOS** (Apple Silicon & Intel), **Linux** (x86_64, aarch64), and **Windows** (`rsql.exe`).
+- **Zero-Dependency Standalone Binary**:
+  - Pure Rust PostgreSQL wire protocol (`tokio-postgres` + TLS).
+  - Pre-built releases for **macOS** (Apple Silicon & Intel), **Linux** (x86_64, aarch64), and **Windows** (`ruql.exe`).
   - No `libpq` or PostgreSQL client installation required.
+- **Self-Updating**:
+  - Single command `ruql --update` fetches, verifies, and installs the latest release in-place.
 - **Adaptive Dialect Engine**:
   - Automatically identifies target server upon connection via `SELECT version()`.
   - Seamlessly chooses the exact compatible catalog queries:
@@ -33,145 +58,78 @@ Standard `psql` (especially versions 14 to 17) encounters severe issues in heter
   - `\dep <schema.table>`: Inspects partition keys and partition values (`SVV_EXTERNAL_PARTITIONS`).
   - `\ds`: Lists Redshift Data Shares (cross-cluster and AWS Data Exchange).
   - `\d <table>`: Automatically detects if a table is external (queries `SVV_EXTERNAL_COLUMNS`) or local (shows Redshift `DISTKEY`, `SORTKEY`, and column `ENCODE`).
+- **Standard psql Pager with 'R' (Show All)**:
+  - Built-in in-process pager (`--More-- [R: show all, Space: page, Enter: line, Q: quit]`).
+  - Pressing **`R`** shows all remaining rows continuously ("bung ra hết") and keeps the entire table in the terminal scrollback buffer.
+- **High-Performance Batching & I/O**:
+  - Batched script execution sends multiple statements in a single network round-trip.
+  - Zero-reallocation string buffer and locked stdout for maximum throughput on large datasets.
 - **High-Performance CSV & TSV Export**:
   - `--csv`: Export query output formatted as standard RFC 4180 CSV (requires `-c`).
-  - `--tsv`: Export query output formatted as TSV (Tab-Separated Values, requires `-c`).
-  - By default includes column header row.
+  - `--tsv`: Export query output formatted as TSV (requires `-c`).
   - `--no-header` / `-t` / `--tuples-only`: Suppresses column header row.
 - **Startup Configuration Files**:
-  - Automatically loads and executes settings from `~/.psqlrc`, `~/.redshiftrc`, and `~/.rsqlrc` (or `$PSQLRC`).
+  - Automatically loads and executes settings from `~/.ruqlrc`, `~/.psqlrc`, `~/.redshiftrc`, and `~/.rsqlrc`.
   - Support for `-X` / `--no-psqlrc` to skip loading startup files.
 - **Modern Developer Ergonomics**:
   - **Live Syntax Highlighting**: Colors SQL keywords, literals, numbers, comments, and meta-commands in real-time.
   - **Context-Aware Tab Completion**: Auto-completes SQL keywords, meta-commands, schemas, local tables, and external Spectrum tables.
   - **Multi-Line Editing**: Seamless multi-line statement assembly until `;` is entered.
-  - **Rich Output Formats**: Aligned Unicode tables, Expanded `\x` record display, CSV, TSV, JSON, and Markdown tables.
-  - **Adaptive Pager**: Automatically activates scrollable pager for wide or tall result sets.
-  - **Command History**: Persistent history saved to `~/.rsql_history`.
+  - **Rich Output Formats**: Aligned ASCII tables, Expanded `\x` record display (`auto`, `on`, `off`), CSV, TSV, JSON, and Markdown tables.
+  - **Command History**: Persistent history saved to `~/.ruql_history`.
 
 ---
 
-## 📦 Installation & Build
-
-### Build from source (Single Binary)
+## 🛠️ Build from Source
 
 ```bash
-cd rsql
+git clone https://github.com/AMSComm/RustSQL.git
+cd RustSQL
 cargo build --release
 ```
 
-The resulting standalone executable will be at `./target/release/rsql`. You can move it anywhere into your `PATH`:
-
-```bash
-cp ./target/release/rsql /usr/local/bin/
-```
-
-### Cross-Compilation
-
-Because `rsql` has zero external C library dependencies, it can be cross-compiled effortlessly:
-- **macOS Apple Silicon**: `cargo build --release --target aarch64-apple-darwin`
-- **Linux (musl static)**: `cargo build --release --target x86_64-unknown-linux-musl`
-- **Windows**: `cargo build --release --target x86_64-pc-windows-msvc`
+The resulting standalone executable will be at `./target/release/ruql`.
 
 ---
 
-## 💻 Usage & CLI Flags
+## 📋 Command-Line Options
 
-`rsql` mirrors standard `psql` command-line flags:
+```text
+Usage: ruql [OPTIONS] [URI_OR_DBNAME]
 
-```bash
-# Connect using connection URI
-rsql postgresql://user:pass@my-redshift-cluster.xyz.redshift.amazonaws.com:5439/dev
+Arguments:
+  [URI_OR_DBNAME]  Connection URI or dbname (e.g. postgresql://user:pass@host:port/dbname)
 
-# Connect using traditional flags
-rsql -h localhost -p 5432 -U postgres -d mydb
-
-# Run a query and output as CSV (with header)
-rsql -h localhost -d mydb --csv -c "SELECT id, name, created_at FROM users LIMIT 10;"
-
-# Run a query and output as CSV without headers
-rsql -h localhost -d mydb --csv --no-header -c "SELECT id, name FROM users LIMIT 10;"
-# Or using psql short alias -t:
-rsql -h localhost -d mydb --csv -t -c "SELECT id, name FROM users LIMIT 10;"
-
-# Run a query and output as TSV (Tab-Separated Values)
-rsql -h localhost -d mydb --tsv -c "SELECT id, name FROM users LIMIT 10;"
-
-# Run a query and output as TSV without header
-rsql -h localhost -d mydb --tsv -t -c "SELECT id, name FROM users LIMIT 10;"
-
-# Run a single query and output as JSON
-rsql -h localhost -d mydb --json -c "SELECT * FROM users LIMIT 10;"
-
-# Skip reading ~/.psqlrc, ~/.rsqlrc, ~/.redshiftrc
-rsql -X -h localhost -d mydb -c "SELECT 1;"
-
-# Run a SQL script file
-rsql -h localhost -d mydb -f migrations.sql
-
-# Force password prompt
-rsql -h remote-host -U user -d db -W
-```
-
-### Environment Variables Supported
-- `PGHOST`
-- `PGPORT` (defaults to `5439` for Redshift hosts, `5432` for Postgres)
-- `PGUSER`
-- `PGDATABASE`
-- `PGPASSWORD`
-- `PGSSLMODE` (`disable`, `prefer`, `require`)
-- `PSQLRC` (path to custom rc file)
-- `DATABASE_URL`
-- `~/.pgpass` file is automatically read if password is not supplied in CLI or env.
-
----
-
-## ⚙️ Configuration via `~/.psqlrc` or `~/.redshiftrc`
-
-`rsql` reads configuration commands from `~/.psqlrc`, `~/.redshiftrc` (when connecting to Redshift), or `~/.rsqlrc`:
-
-```sql
--- ~/.psqlrc or ~/.redshiftrc
-\timing on
-\pset null '[NULL]'
-\pset format aligned
-\pset tuples_only off
-\set PROMPT1 '%n@%m:%/%R%# '
+Options:
+  -h, --host <HOST>          Database server host or socket directory [env: PGHOST=]
+  -p, --port <PORT>          Database server port (default: 5432 for Postgres, 5439 for Redshift) [env: PGPORT=]
+  -U, --username <USERNAME>  Database user name [env: PGUSER=]
+  -d, --dbname <DBNAME>      Database name to connect to [env: PGDATABASE=]
+  -c, --command <COMMAND>    Run only single command (SQL or internal) and exit
+  -f, --file <FILE>          Execute commands from file, then exit
+  -a, --echo-all             Echo all input from script
+  -q, --quiet                Run quietly (no messages, only query output)
+  -W, --password             Force password prompt
+  -w, --no-password          Never prompt for password
+  -x, --expanded             Turn on expanded table display mode (like \x)
+      --sslmode <SSLMODE>    SSL connection mode: disable, prefer, require, verify-ca, verify-full
+      --csv                  Output query results as CSV (requires -c/--command)
+      --tsv                  Output query results as TSV (requires -c/--command)
+  -t, --no-header            Do not print column headers (tuples only)
+  -X, --no-psqlrc            Do not read startup files (~/.ruqlrc, ~/.psqlrc, ~/.rsqlrc, ~/.redshiftrc)
+      --no-pager             Do not use pager to display query results
+      --pager <PAGER>        When to use pager: off, on, always
+      --json                 Output query results as JSON
+      --markdown             Output query results as Markdown table
+      --update               Self-update ruql to the latest release from GitHub
+      --check-update         Check if a newer version is available without updating
+  -v, --set <SET_VARS>       Set ruql/psql variable NAME=VALUE
+  -V, --version              Print version
+      --help                 Print help
 ```
 
 ---
 
-## ⚡ Interactive Meta-Commands Reference
+## 📜 License
 
-| Command | Description | Redshift Lakehouse Feature |
-|---|---|---|
-| `\q` | Quit `rsql` | |
-| `\?` | Show general meta-command help | Includes Redshift commands |
-| `\h [topic]` | Show SQL syntax help (e.g. `\h select`, `\h spectrum`) | |
-| `\conninfo` | Display current connection, engine dialect, and SSL status | Shows detected dialect |
-| `\l` / `\list` | List databases | Displays datashares via `SVV_REDSHIFT_DATABASES` |
-| `\dn [pattern]` | List schemas | Displays local, external Glue, and shared schemas |
-| `\dt [pattern]` | List tables | Displays local, external Spectrum, and shared tables |
-| `\dv [pattern]` | List views and materialized views | |
-| `\dex [pattern]` | List Redshift Spectrum external tables | S3 locations, format, SerDe |
-| `\dep <tbl>` | List partitions of external table | S3 partition values & locations |
-| `\ds` | List Redshift Data Shares | Producer / consumer shares |
-| `\d <tbl>` | Describe table columns & metadata | Shows Redshift `DISTKEY`, `SORTKEY`, `ENCODE` or Spectrum external columns |
-| `\du` / `\dg` | List database roles/users | Safe across modern PG, legacy PG, and Redshift |
-| `\x [on\|off]` | Toggle expanded vertical record display | |
-| `\t [on\|off]` | Toggle tuples-only mode (hide headers and row counts) | |
-| `\timing [on\|off]` | Toggle query execution timer | |
-| `\c <db> [usr] [host] [port]` | Connect to a new database without leaving `rsql` | |
-| `\pset <opt> [val]` | Set table options (`format`, `null`, `tuples_only`, `fieldsep`, `border`) | |
-| `\e [file]` | Edit query buffer in `$EDITOR` | |
-| `\i <file>` | Execute commands from file | |
-
----
-
-## 🧪 Testing
-
-Run the full automated test suite:
-
-```bash
-cargo test
-```
+MIT License. Copyright (c) 2026 AMSComm.

@@ -515,14 +515,14 @@ fn print_conninfo(conn: &DbConnection) {
         conn.config.port,
         ssl_info
     );
-    println!("Client: psql (PostgreSQL) 17.4 (rsql 0.1.0)");
+    println!("Client: ruql (RustSQL) {} (psql 17.4 compatibility)", env!("CARGO_PKG_VERSION"));
     println!("Server: {}", conn.server_version.trim());
     println!("Engine Dialect: {}", conn.dialect.dialect_name().cyan().bold());
 }
 
 fn print_general_help(has_external: bool) {
-    println!("{}", "General rsql meta-commands:".bold());
-    println!("  \\q                 quit rsql");
+    println!("{}", "General ruql / psql meta-commands:".bold());
+    println!("  \\q                 quit ruql");
     println!("  \\?                 show help on backslash commands");
     println!("  \\h [cmd]           help on SQL syntax");
     println!("  \\conninfo          display information about current connection");

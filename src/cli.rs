@@ -2,10 +2,10 @@ use clap::Parser;
 
 #[derive(Parser, Debug, Clone)]
 #[command(
-    name = "psql",
+    name = "ruql",
     author = "Huy <dev@amsoftware.com.vn>",
-    version = "17.4 (rsql 0.1.0)",
-    about = "psql (PostgreSQL) 17.4 (rsql clone) - Next-Generation PostgreSQL and Amazon Redshift CLI\nFull psql compatibility with Redshift Lakehouse/External DB & Legacy Postgres support",
+    version = concat!(env!("CARGO_PKG_VERSION"), " (psql 17.4 compatibility)"),
+    about = "ruql (RustSQL) - Next-Generation PostgreSQL and Amazon Redshift CLI\nFull psql compatibility with Redshift Lakehouse/External DB & Legacy Postgres support",
     disable_help_flag = true
 )]
 pub struct CliArgs {
@@ -97,6 +97,14 @@ pub struct CliArgs {
     /// Output query results as Markdown table
     #[arg(long = "markdown")]
     pub markdown: bool,
+
+    /// Self-update ruql to the latest release from GitHub
+    #[arg(long = "update")]
+    pub update: bool,
+
+    /// Check if a newer version is available without updating
+    #[arg(long = "check-update")]
+    pub check_update: bool,
 
     /// Set rsql/psql variable NAME=VALUE
     #[arg(short = 'v', long = "set")]

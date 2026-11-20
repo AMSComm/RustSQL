@@ -1,5 +1,5 @@
-use rsql::meta::{handle_pset, parse_meta_command, AppState, MetaCommand};
-use rsql::output::OutputFormat;
+use rustsql::meta::{handle_pset, parse_meta_command, AppState, MetaCommand};
+use rustsql::output::OutputFormat;
 
 #[test]
 fn test_parse_meta_commands() {
@@ -91,15 +91,15 @@ fn test_pset_options() {
 
     // Test \pset pager
     handle_pset("pager", Some("off"), &mut state);
-    assert_eq!(state.pager, rsql::meta::PagerMode::Off);
+    assert_eq!(state.pager, rustsql::meta::PagerMode::Off);
     handle_pset("pager", Some("on"), &mut state);
-    assert_eq!(state.pager, rsql::meta::PagerMode::On);
+    assert_eq!(state.pager, rustsql::meta::PagerMode::On);
 
     // Test \pset expanded
     handle_pset("expanded", Some("on"), &mut state);
-    assert_eq!(state.expanded, rsql::meta::ExpandedMode::On);
+    assert_eq!(state.expanded, rustsql::meta::ExpandedMode::On);
     handle_pset("expanded", Some("auto"), &mut state);
-    assert_eq!(state.expanded, rsql::meta::ExpandedMode::Auto);
+    assert_eq!(state.expanded, rustsql::meta::ExpandedMode::Auto);
     handle_pset("expanded", Some("off"), &mut state);
-    assert_eq!(state.expanded, rsql::meta::ExpandedMode::Off);
+    assert_eq!(state.expanded, rustsql::meta::ExpandedMode::Off);
 }

@@ -1,12 +1,14 @@
 use clap::Parser;
-use rsql::cli::CliArgs;
-use rsql::config::ConnectionConfig;
-use rsql::connection::DbConnection;
-use rsql::error::Result;
-use rsql::meta::{execute_meta_command, parse_meta_command, AppState};
-use rsql::output::{execute_and_display_query, OutputFormat};
-use rsql::rc::load_startup_rc_files;
-use rsql::repl::run_interactive_repl;
+use colored::Colorize;
+use rustsql::cli::CliArgs;
+use rustsql::config::ConnectionConfig;
+use rustsql::connection::DbConnection;
+use rustsql::error::Result;
+use rustsql::meta::{execute_meta_command, parse_meta_command, AppState};
+use rustsql::output::{execute_and_display_query, OutputFormat};
+use rustsql::rc::load_startup_rc_files;
+use rustsql::repl::run_interactive_repl;
+use rustsql::updater;
 use std::fs;
 use std::process::exit;
 
@@ -19,9 +21,39 @@ async fn main() {
                 .file_name()
                 .map(|n| n.to_string_lossy().to_string())
         })
-        .unwrap_or_else(|| "psql".to_string());
+        .unwrap_or_else(|| "ruql".to_string());
 
     let args = CliArgs::parse();
+
+    // Check for self-update
+    if args.update {
+        if let Err(e) = updater::update_cli().await {
+            eprintln!("{}: update error: {}", bin_name, e);
+            exit(1);
+        }
+        exit(0);
+    }
+
+    // Check for update availability
+    if args.check_update {
+        match updater::check_latest_release().await {
+            Ok(Some(release)) => {
+                let current_version = env!("CARGO_PKG_VERSION");
+                if updater::is_newer_version(&release.tag_name, current_version) {
+                    println!(
+                        "New version available: {} (current: v{}). Run \"ruql --update\" to install.",
+                        release.tag_name.green().bold(),
+                        current_version
+                    );
+                } else {
+                    println!("ruql is up to date (version v{}).", current_version);
+                }
+            }
+            Ok(None) => println!("No published releases found yet."),
+            Err(e) => eprintln!("Failed to check for updates: {}", e),
+        }
+        exit(0);
+    }
 
     // Validation: --csv and --tsv require -c/--command
     if (args.csv || args.tsv) && args.command.is_none() {
@@ -57,7 +89,7 @@ async fn run_app(args: CliArgs) -> Result<()> {
         state.format = OutputFormat::Markdown;
     } else if args.expanded {
         state.format = OutputFormat::Expanded;
-        state.expanded = rsql::meta::ExpandedMode::On;
+        state.expanded = rustsql::meta::ExpandedMode::On;
     }
 
     if args.no_header {
@@ -65,12 +97,12 @@ async fn run_app(args: CliArgs) -> Result<()> {
     }
 
     if args.no_pager {
-        state.pager = rsql::meta::PagerMode::Off;
+        state.pager = rustsql::meta::PagerMode::Off;
     } else if let Some(p) = &args.pager {
         match p.to_lowercase().as_str() {
-            "off" | "0" | "false" => state.pager = rsql::meta::PagerMode::Off,
-            "always" => state.pager = rsql::meta::PagerMode::Always,
-            _ => state.pager = rsql::meta::PagerMode::On,
+            "off" | "0" | "false" => state.pager = rustsql::meta::PagerMode::Off,
+            "always" => state.pager = rustsql::meta::PagerMode::Always,
+            _ => state.pager = rustsql::meta::PagerMode::On,
         }
     }
 
@@ -100,7 +132,7 @@ async fn run_app(args: CliArgs) -> Result<()> {
     // Mode 2: Run script from file (-f)
     if let Some(file_path) = &args.file {
         let content = fs::read_to_string(file_path)?;
-        rsql::meta::execute_script(&content, &mut conn, &mut state).await?;
+        rustsql::meta::execute_script(&content, &mut conn, &mut state).await?;
         return Ok(());
     }
 

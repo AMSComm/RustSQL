@@ -7,3 +7,4 @@ pub mod meta;
 pub mod output;
 pub mod rc;
 pub mod repl;
+pub mod updater;

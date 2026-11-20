@@ -1,10 +1,19 @@
 [package]
-name = "rsql"
+name = "rustsql"
 version = "0.1.0"
 edition = "2021"
 authors = ["Huy <dev@amsoftware.com.vn>"]
-description = "Next-Generation PostgreSQL and Amazon Redshift CLI (psql clone with Lakehouse & legacy compatibility)"
+description = "RustSQL (ruql) - Next-Generation PostgreSQL and Amazon Redshift CLI"
 license = "MIT"
+repository = "https://github.com/AMSComm/RustSQL"
+
+[lib]
+name = "rustsql"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ruql"
+path = "src/main.rs"
 
 [dependencies]
 # CLI & Args
@@ -33,3 +42,10 @@ chrono = "0.4"
 # Error handling
 anyhow = "1.0"
 thiserror = "2.0"
+
+# Auto-update & packaging
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+self-replace = "1.5"
+flate2 = "1.0"
+tar = "0.4"
+zip = { version = "2.2", default-features = false, features = ["deflate"] }

@@ -1,6 +1,6 @@
-use rsql::dialect::postgres::PostgresDialect;
-use rsql::dialect::redshift::RedshiftDialect;
-use rsql::dialect::Dialect;
+use rustsql::dialect::postgres::PostgresDialect;
+use rustsql::dialect::redshift::RedshiftDialect;
+use rustsql::dialect::Dialect;
 
 #[test]
 fn test_redshift_dialect_queries() {

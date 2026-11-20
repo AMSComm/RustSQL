@@ -1,6 +1,6 @@
 use clap::Parser;
-use rsql::cli::CliArgs;
-use rsql::config::ConnectionConfig;
+use rustsql::cli::CliArgs;
+use rustsql::config::ConnectionConfig;
 
 #[test]
 fn test_cli_args_parsing() {
@@ -87,7 +87,7 @@ fn test_connection_config_from_uri() {
     assert_eq!(config.user, "analyst");
     assert_eq!(config.password.unwrap(), "secretpass");
     assert_eq!(config.dbname, "analytics");
-    assert_eq!(config.ssl_mode, rsql::config::SslMode::Require);
+    assert_eq!(config.ssl_mode, rustsql::config::SslMode::Require);
 }
 
 #[test]
@@ -96,7 +96,7 @@ fn test_cli_sslmode_flags_and_precedence() {
     let args_default =
         CliArgs::parse_from(["rsql", "-h", "redshift.company.com", "-d", "dev", "-w"]);
     let config_default = ConnectionConfig::from_cli(&args_default).unwrap();
-    assert_eq!(config_default.ssl_mode, rsql::config::SslMode::Prefer);
+    assert_eq!(config_default.ssl_mode, rustsql::config::SslMode::Prefer);
 
     // Explicit --sslmode disable
     let args_disable = CliArgs::parse_from([
@@ -110,7 +110,7 @@ fn test_cli_sslmode_flags_and_precedence() {
         "-w",
     ]);
     let config_disable = ConnectionConfig::from_cli(&args_disable).unwrap();
-    assert_eq!(config_disable.ssl_mode, rsql::config::SslMode::Disable);
+    assert_eq!(config_disable.ssl_mode, rustsql::config::SslMode::Disable);
 
     // Explicit --sslmode require
     let args_require = CliArgs::parse_from([
@@ -124,7 +124,7 @@ fn test_cli_sslmode_flags_and_precedence() {
         "-w",
     ]);
     let config_require = ConnectionConfig::from_cli(&args_require).unwrap();
-    assert_eq!(config_require.ssl_mode, rsql::config::SslMode::Require);
+    assert_eq!(config_require.ssl_mode, rustsql::config::SslMode::Require);
 
     // CLI flag overrides URI sslmode
     let args_override = CliArgs::parse_from([
@@ -135,5 +135,5 @@ fn test_cli_sslmode_flags_and_precedence() {
         "-w",
     ]);
     let config_override = ConnectionConfig::from_cli(&args_override).unwrap();
-    assert_eq!(config_override.ssl_mode, rsql::config::SslMode::Disable);
+    assert_eq!(config_override.ssl_mode, rustsql::config::SslMode::Disable);
 }

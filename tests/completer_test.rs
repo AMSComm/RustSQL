@@ -1,4 +1,4 @@
-use rsql::repl::completer::SqlCompleter;
+use rustsql::repl::completer::SqlCompleter;
 
 #[test]
 fn test_sql_keyword_completion() {
