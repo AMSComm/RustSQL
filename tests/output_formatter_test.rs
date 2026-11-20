@@ -161,6 +161,70 @@ fn test_visual_lines_calculation() {
 }
 
 #[test]
+fn test_parse_pager_key_actions() {
+    use crossterm::event::{KeyCode, KeyModifiers};
+    use rsql::output::pager::{parse_pager_key, PagerAction};
+
+    // 'r' and 'R' trigger ShowAll ("bung ra het")
+    assert_eq!(
+        parse_pager_key(KeyCode::Char('r'), KeyModifiers::NONE),
+        Some(PagerAction::ShowAll)
+    );
+    assert_eq!(
+        parse_pager_key(KeyCode::Char('R'), KeyModifiers::NONE),
+        Some(PagerAction::ShowAll)
+    );
+
+    // Space and PageDown trigger NextPage
+    assert_eq!(
+        parse_pager_key(KeyCode::Char(' '), KeyModifiers::NONE),
+        Some(PagerAction::NextPage)
+    );
+    assert_eq!(
+        parse_pager_key(KeyCode::PageDown, KeyModifiers::NONE),
+        Some(PagerAction::NextPage)
+    );
+
+    // Enter, Down, j trigger NextLine
+    assert_eq!(
+        parse_pager_key(KeyCode::Enter, KeyModifiers::NONE),
+        Some(PagerAction::NextLine)
+    );
+    assert_eq!(
+        parse_pager_key(KeyCode::Down, KeyModifiers::NONE),
+        Some(PagerAction::NextLine)
+    );
+    assert_eq!(
+        parse_pager_key(KeyCode::Char('j'), KeyModifiers::NONE),
+        Some(PagerAction::NextLine)
+    );
+
+    // 'd' triggers HalfPage
+    assert_eq!(
+        parse_pager_key(KeyCode::Char('d'), KeyModifiers::NONE),
+        Some(PagerAction::HalfPage)
+    );
+
+    // 'q', 'Q', Esc, Ctrl+C trigger Quit
+    assert_eq!(
+        parse_pager_key(KeyCode::Char('q'), KeyModifiers::NONE),
+        Some(PagerAction::Quit)
+    );
+    assert_eq!(
+        parse_pager_key(KeyCode::Char('Q'), KeyModifiers::NONE),
+        Some(PagerAction::Quit)
+    );
+    assert_eq!(
+        parse_pager_key(KeyCode::Esc, KeyModifiers::NONE),
+        Some(PagerAction::Quit)
+    );
+    assert_eq!(
+        parse_pager_key(KeyCode::Char('c'), KeyModifiers::CONTROL),
+        Some(PagerAction::Quit)
+    );
+}
+
+#[test]
 fn test_split_statements_complex() {
     use rsql::output::split_statements;
 
