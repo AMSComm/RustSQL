@@ -113,16 +113,24 @@ fi
 chmod +x "${TEMP_DIR}/${BIN_NAME}"
 
 # 7. Determine installation destination
-INSTALL_DIR="/usr/local/bin"
 USE_SUDO=false
 
-if [ ! -w "$INSTALL_DIR" ]; then
-    if [ "$EUID" -ne 0 ] && command -v sudo >/dev/null 2>&1; then
-        USE_SUDO=true
-    else
-        INSTALL_DIR="${HOME}/.local/bin"
-        mkdir -p "$INSTALL_DIR"
-    fi
+if [ -n "${RUQL_INSTALL_DIR:-}" ]; then
+    INSTALL_DIR="$RUQL_INSTALL_DIR"
+    mkdir -p "$INSTALL_DIR"
+elif [ -w "/usr/local/bin" ]; then
+    INSTALL_DIR="/usr/local/bin"
+elif [ "${EUID:-$(id -u)}" -eq 0 ]; then
+    INSTALL_DIR="/usr/local/bin"
+elif sudo -n true 2>/dev/null; then
+    INSTALL_DIR="/usr/local/bin"
+    USE_SUDO=true
+elif [ -t 0 ] && command -v sudo >/dev/null 2>&1; then
+    INSTALL_DIR="/usr/local/bin"
+    USE_SUDO=true
+else
+    INSTALL_DIR="${HOME}/.local/bin"
+    mkdir -p "$INSTALL_DIR"
 fi
 
 TARGET_BIN="${INSTALL_DIR}/${BIN_NAME}"
