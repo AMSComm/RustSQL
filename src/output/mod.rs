@@ -134,7 +134,7 @@ pub fn split_statements(sql: &str) -> Vec<&str> {
     let mut in_double_quote = false;
     let mut in_line_comment = false;
     let mut block_comment_depth = 0;
-    let mut dollar_tag: Option<&str> = None;
+    let mut dollar_tag: Option<&[u8]> = None;
 
     while i < len {
         if in_line_comment {
@@ -160,9 +160,10 @@ pub fn split_statements(sql: &str) -> Vec<&str> {
         }
 
         if let Some(tag) = dollar_tag {
-            if sql[i..].starts_with(tag) {
+            if bytes[i..].starts_with(tag) {
+                let tag_len = tag.len();
                 dollar_tag = None;
-                i += tag.len();
+                i += tag_len;
             } else {
                 i += 1;
             }
@@ -221,12 +222,13 @@ pub fn split_statements(sql: &str) -> Vec<&str> {
 
         // Check for dollar-quoted strings: $tag$ or $$
         if bytes[i] == b'$' {
-            if let Some(end_tag) = sql[i + 1..].find('$') {
-                let tag_candidate = &sql[i..=i + 1 + end_tag];
-                let inner = &tag_candidate[1..tag_candidate.len() - 1];
-                if inner.is_empty() || inner.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
-                    dollar_tag = Some(tag_candidate);
-                    i += tag_candidate.len();
+            let rest = &bytes[i + 1..];
+            if let Some(pos) = rest.iter().position(|&b| b == b'$') {
+                let inner = &bytes[i + 1..i + 1 + pos];
+                if inner.is_empty() || inner.iter().all(|&b| b.is_ascii_alphanumeric() || b == b'_') {
+                    let tag_slice = &bytes[i..=i + 1 + pos];
+                    dollar_tag = Some(tag_slice);
+                    i += tag_slice.len();
                     continue;
                 }
             }
@@ -234,9 +236,11 @@ pub fn split_statements(sql: &str) -> Vec<&str> {
 
         // Semicolon outside of any quote or comment marks end of statement
         if bytes[i] == b';' {
-            let stmt = sql[start..i].trim();
-            if !stmt.is_empty() {
-                statements.push(stmt);
+            if let Ok(stmt) = std::str::from_utf8(&bytes[start..i]) {
+                let trimmed = stmt.trim();
+                if !trimmed.is_empty() {
+                    statements.push(trimmed);
+                }
             }
             start = i + 1;
         }
@@ -245,9 +249,11 @@ pub fn split_statements(sql: &str) -> Vec<&str> {
     }
 
     if start < len {
-        let stmt = sql[start..].trim();
-        if !stmt.is_empty() {
-            statements.push(stmt);
+        if let Ok(stmt) = std::str::from_utf8(&bytes[start..]) {
+            let trimmed = stmt.trim();
+            if !trimmed.is_empty() {
+                statements.push(trimmed);
+            }
         }
     }
 

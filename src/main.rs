@@ -14,6 +14,9 @@ use std::process::exit;
 
 #[tokio::main]
 async fn main() {
+    // Initialize panic hook and error logging
+    rustsql::logger::init();
+
     let bin_name = std::env::args()
         .next()
         .and_then(|p| {
@@ -63,6 +66,7 @@ async fn main() {
 
     if let Err(e) = run_app(args).await {
         eprintln!("{}: error: {}", bin_name, e);
+        rustsql::logger::log_error("Application startup/execution error", &e);
         exit(1);
     }
 }

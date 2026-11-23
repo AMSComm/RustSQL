@@ -248,6 +248,45 @@ fn test_split_statements_complex() {
 }
 
 #[test]
+fn test_split_statements_multibyte_utf8_in_dollar_quotes() {
+    use rustsql::output::split_statements;
+
+    // Multi-byte UTF-8 Japanese characters (e.g., '旧' is 3 bytes: 1023..1026)
+    // inside stored procedures must not trigger char boundary slice panics!
+    let sql = r#"
+        create or replace procedure maindata.p_export_kogakuhin_data()
+        language plpgsql
+        as $$
+        declare
+            c_source varchar := 'test';
+        begin
+            -- ===== 旧ロジック（一時的にコメントアウト）=====
+            -- WITH kz_shinpin AS (
+            --     SELECT CASE WHEN souko = '恩田原' THEN '11' END
+            -- )
+            call p_print(c_source, 'end');
+        end;
+        $$;
+        SELECT 'done' as status;
+    "#;
+
+    let stmts = split_statements(sql);
+    assert_eq!(stmts.len(), 2);
+    assert!(stmts[0].starts_with("create or replace procedure"));
+    assert!(stmts[0].contains("旧ロジック"));
+    assert!(stmts[0].ends_with("$$"));
+    assert_eq!(stmts[1], "SELECT 'done' as status");
+
+    // Also test parsing real procedure file if available
+    let p_path = "/Users/huy/dev/a2/datakiban/redshift/redshift/procedure/maindata/p_export_kogakuhin_data.sql";
+    if let Ok(content) = std::fs::read_to_string(p_path) {
+        let procedure_stmts = split_statements(&content);
+        assert!(!procedure_stmts.is_empty());
+        assert!(procedure_stmts[0].starts_with("create or replace procedure"));
+    }
+}
+
+#[test]
 fn test_extract_command_tag() {
     use rustsql::output::extract_command_tag;
 

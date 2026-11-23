@@ -190,9 +190,7 @@ pub async fn run_interactive_repl(
                     query_buffer.clear();
                     state.last_query = full_query.clone();
 
-                    if let Err(e) = crate::output::execute_and_display_query(&conn.client, &full_query, &state, true).await {
-                        eprintln!("{}", format!("ERROR: {}", e).red().bold());
-                    }
+                    execute_query_with_cancel(&mut conn, &full_query, &state).await;
                 }
             }
             Err(ReadlineError::Interrupted) => {
@@ -221,6 +219,89 @@ pub async fn run_interactive_repl(
     }
 
     Ok(())
+}
+
+pub async fn execute_query_with_cancel(
+    conn: &mut DbConnection,
+    query: &str,
+    state: &AppState,
+) {
+    if conn.is_closed() {
+        eprintln!("{}", "The connection to the server was lost. Attempting reset: ...".yellow());
+        match conn.reconnect().await {
+            Ok(()) => {
+                eprintln!("{}", "Reset: Succeeded.".green().bold());
+            }
+            Err(e) => {
+                eprintln!("{}", format!("Reset: Failed: {}", e).red().bold());
+                crate::logger::log_error("Connection reset failed", &e);
+                return;
+            }
+        }
+    }
+
+    let cancel_token = conn.client.cancel_token();
+    let is_ssl = conn.is_ssl;
+    let ssl_mode = conn.config.ssl_mode;
+    let mut cancel_sent = false;
+
+    let query_res = {
+        let mut query_fut = std::pin::pin!(crate::output::execute_and_display_query(&conn.client, query, state, true));
+        let mut res = None;
+
+        while res.is_none() {
+            tokio::select! {
+                r = &mut query_fut => {
+                    res = Some(r);
+                }
+                _ = tokio::signal::ctrl_c(), if !cancel_sent => {
+                    cancel_sent = true;
+                    eprintln!("{}", "Cancel request sent".yellow());
+                    let cancel_token_clone = cancel_token.clone();
+                    tokio::spawn(async move {
+                        if is_ssl {
+                            if let Ok(connector) = crate::connection::create_tls_connector(ssl_mode) {
+                                let _ = cancel_token_clone.cancel_query(connector).await;
+                            } else {
+                                let _ = cancel_token_clone.cancel_query(tokio_postgres::NoTls).await;
+                            }
+                        } else {
+                            let _ = cancel_token_clone.cancel_query(tokio_postgres::NoTls).await;
+                        }
+                    });
+                }
+                _ = tokio::signal::ctrl_c(), if cancel_sent => {
+                    eprintln!("{}", "^C (forced abort)".red());
+                    break;
+                }
+            }
+        }
+        res
+    };
+
+    if let Some(Err(e)) = query_res {
+        let err_msg = format!("{}", e);
+        if err_msg.contains("canceling statement due to user request")
+            || err_msg.contains("57014")
+            || err_msg.contains("query was canceled")
+        {
+            eprintln!("{}", "Query canceled (Ctrl+C)".yellow().bold());
+        } else {
+            eprintln!("{}", format!("ERROR: {}", e).red().bold());
+            crate::logger::log_error("Query execution error", &format!("{}\nSQL: {}", e, query));
+
+            if conn.is_closed() {
+                eprintln!("{}", "The connection to the server was lost. Attempting reset: ...".yellow());
+                match conn.reconnect().await {
+                    Ok(()) => eprintln!("{}", "Reset: Succeeded.".green().bold()),
+                    Err(re_err) => {
+                        eprintln!("{}", format!("Reset: Failed: {}", re_err).red().bold());
+                        crate::logger::log_error("Connection reset failed", &re_err);
+                    }
+                }
+            }
+        }
+    }
 }
 
 pub async fn preload_cache(conn: &DbConnection, completer: &SqlCompleter) {

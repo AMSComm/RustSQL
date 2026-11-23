@@ -97,7 +97,7 @@ where
     }
 }
 
-fn create_tls_connector(ssl_mode: SslMode) -> Result<MakeTlsConnector> {
+pub fn create_tls_connector(ssl_mode: SslMode) -> Result<MakeTlsConnector> {
     let mut builder = TlsConnector::builder();
     match ssl_mode {
         SslMode::Disable => {
@@ -238,6 +238,21 @@ pub fn format_connection_error(
 }
 
 impl DbConnection {
+    pub fn is_closed(&self) -> bool {
+        self.client.is_closed()
+    }
+
+    pub async fn reconnect(&mut self) -> Result<()> {
+        let new_conn = Self::connect(self.config.clone()).await?;
+        self.client = new_conn.client;
+        self.dialect = new_conn.dialect;
+        self.engine = new_conn.engine;
+        self.server_version = new_conn.server_version;
+        self.is_superuser = new_conn.is_superuser;
+        self.is_ssl = new_conn.is_ssl;
+        Ok(())
+    }
+
     pub async fn connect(config: ConnectionConfig) -> Result<Self> {
         let app_name = std::env::var("PGAPPNAME").unwrap_or_else(|_| "psql".to_string());
 
@@ -251,6 +266,38 @@ impl DbConnection {
 
         if let Some(pass) = &config.password {
             pg_config.password(pass);
+        }
+
+        // Keepalive configuration to maintain stable connection across bastion hosts, SSH tunnels and NAT
+        let keepalives = std::env::var("PGKEEPALIVES")
+            .map(|v| v != "0")
+            .unwrap_or(true);
+        pg_config.keepalives(keepalives);
+
+        if keepalives {
+            let idle_secs = std::env::var("PGKEEPALIVES_IDLE")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(15);
+            pg_config.keepalives_idle(std::time::Duration::from_secs(idle_secs));
+
+            let interval_secs = std::env::var("PGKEEPALIVES_INTERVAL")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(5);
+            pg_config.keepalives_interval(std::time::Duration::from_secs(interval_secs));
+
+            let retries = std::env::var("PGKEEPALIVES_COUNT")
+                .ok()
+                .and_then(|v| v.parse::<u32>().ok())
+                .unwrap_or(3);
+            pg_config.keepalives_retries(retries);
+
+            let tcp_user_timeout = std::env::var("PGTCP_USER_TIMEOUT")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(30);
+            pg_config.tcp_user_timeout(std::time::Duration::from_secs(tcp_user_timeout));
         }
 
         let timeout_secs = std::env::var("PGCONNECT_TIMEOUT")

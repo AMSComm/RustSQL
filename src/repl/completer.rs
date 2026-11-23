@@ -141,11 +141,16 @@ impl SqlCompleter {
     }
 
     pub fn complete_input(&self, line: &str, pos: usize) -> (usize, Vec<Pair>) {
-        let prefix = if pos <= line.len() {
-            &line[..pos]
+        let safe_pos = if pos <= line.len() {
+            if line.is_char_boundary(pos) {
+                pos
+            } else {
+                (0..=pos).rev().find(|&p| line.is_char_boundary(p)).unwrap_or(0)
+            }
         } else {
-            line
+            line.len()
         };
+        let prefix = &line[..safe_pos];
 
         let trimmed_prefix = prefix.trim_start();
 
