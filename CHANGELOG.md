@@ -5,6 +5,34 @@ All notable changes to **RustSQL (`ruql`)** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.0.3] - 2026-11-25
+
+### 🚀 Highlights
+
+- **Full Function & Stored Procedure Inspection (`\df`, `\df+`)**:
+  - `\df [pattern]`: Inspect all functions and stored procedures with schema, name, return type, argument types, and routine kind (`func`, `proc`, `agg`, `window`).
+  - `\df+ [pattern]`: Verbose view including routine owner, security (`definer`/`invoker`), language, source code body, volatility, and description.
+  - Native dual-engine adaptation: leverages `pg_get_function_result` and `pg_get_function_arguments` on PostgreSQL, and `pg_catalog.pg_proc_info` with `oidvectortypes` on Amazon Redshift with seamless fallback to `pg_proc`.
+- **Direct Source Code Viewer (`\sf`, `\sf+`)**:
+  - `\sf <name>`: Instantly print the complete source code or PL/pgSQL body of any stored procedure or function without writing manual catalog queries.
+  - `\sf+ <name>`: Show source code with line numbering. Includes automatic fallback to Redshift's native `SHOW PROCEDURE` command.
+- **Comprehensive PSQL Parity Meta-Commands Suite**:
+  - `\di`, `\di+ [pattern]`: List indexes (with disk size and index DDL on verbose mode).
+  - `\dm`, `\dm+ [pattern]`: List materialized views.
+  - `\ds`, `\ds+ [pattern]`: List sequences on PostgreSQL / datashares on Redshift (`\dsh` also supported).
+  - `\dT`, `\dT+ [pattern]`: List data types and user-defined enums.
+  - `\dp`, `\z [pattern]`: List access privileges and permission grants on relations.
+  - `\dx`, `\dx+`: List installed database extensions.
+- **Operating System & Session Tools**:
+  - `\cd [dir]`: Change current working directory directly from the REPL (supports `~`).
+  - `\! [cmd]`: Execute shell commands without quitting `ruql` (or launch subshell if called without args).
+  - `\o [file]`: Redirect all query and meta-query results to a file, or revert back to standard output with `\o`.
+  - `\watch [sec]`: Repeatedly execute the last query every N seconds (default: 2s) with timestamp headers and graceful `Ctrl+C` cancellation.
+- **Interactive Auto-Completion**:
+  - Upgraded tab-completion (`SqlCompleter`) covering all newly added meta-commands and arguments.
+
+---
+
 ## [v0.0.2] - 2026-11-24
 
 ### 🚀 Highlights
