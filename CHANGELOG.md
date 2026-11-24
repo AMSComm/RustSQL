@@ -5,6 +5,25 @@ All notable changes to **RustSQL (`ruql`)** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.0.2] - 2026-11-24
+
+### 🚀 Highlights
+
+- **Multi-Byte UTF-8 Statement Parsing Stability**: Fixed critical char boundary slice panic when parsing complex queries, comments, or stored procedures containing Japanese (CJK) characters or emojis inside dollar-quoted blocks (`$$`).
+- **Interactive Query Cancellation (Ctrl+C / Cmd+C)**: Pressing Ctrl+C while a query is executing now sends a standard PostgreSQL `CancelRequest` to abort the running query safely, returning to the REPL prompt without terminating the `ruql` process.
+- **Bastion Host & SSH Tunnel Keepalive**: Enabled proactive TCP Keepalive probes by default to maintain persistent connections across bastion hosts, SSH tunnels, AWS NAT Gateways, and stateful firewalls.
+- **Automatic Connection Recovery**: Added automatic reconnection recovery (`reset`) when an idle or remote connection is lost.
+- **Error & Panic Logging**: Introduced global panic hook and logging system writing full backtraces and runtime errors to `~/.ruql/error.log` while properly resetting raw terminal state.
+
+### 🐛 Bug Fixes & Improvements
+
+- **Parser**: Replaced byte-by-byte string slicing with byte-level slice matching (`bytes[i..].starts_with(...)`) in `split_statements`.
+- **REPL**: Added `execute_query_with_cancel` using `tokio::select!` and `CancelToken` to handle `SIGINT` gracefully.
+- **Network**: Configured TCP keepalive defaults (`keepalives = true`, `idle = 15s`, `interval = 5s`, `count = 3`, `tcp_user_timeout = 30s`) with support for standard `PGKEEPALIVES_*` environment variables.
+- **Installer**: Enhanced `install.sh` to gracefully fallback to `~/.local/bin` when `/usr/local/bin` requires non-interactive `sudo`.
+
+---
+
 ## [v0.0.1] - 2026-11-20
 
 ### 🚀 Highlights
