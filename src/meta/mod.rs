@@ -32,6 +32,7 @@ pub struct AppState {
     pub vars: std::collections::HashMap<String, String>,
     pub pager: PagerMode,
     pub expanded: ExpandedMode,
+    pub output_file: Option<String>,
 }
 
 impl Default for AppState {
@@ -49,6 +50,7 @@ impl Default for AppState {
             vars: std::collections::HashMap::new(),
             pager: PagerMode::On,
             expanded: ExpandedMode::Off,
+            output_file: None,
         }
     }
 }
@@ -61,10 +63,18 @@ pub enum MetaCommand {
     ListSchemas(Option<String>),
     ListTables(Option<String>),
     ListViews(Option<String>),
+    ListMaterializedViews(Option<String>),
+    ListIndexes(Option<String>, bool),
+    ListSequences(Option<String>),
+    ListFunctions(Option<String>, bool),
+    ListTypes(Option<String>, bool),
+    ListPrivileges(Option<String>),
+    ListExtensions(Option<String>),
     ListExternalTables(Option<String>),
     ListExternalPartitions(Option<String>, String),
     ListDatashares,
     Describe(Option<String>, String),
+    ShowFunction(String, bool),
     ListUsers,
     ToggleExpanded(Option<String>),
     ToggleTiming(Option<bool>),
@@ -76,6 +86,10 @@ pub enum MetaCommand {
     Set(String, String),
     Pset(String, Option<String>),
     Echo(String),
+    ChangeDirectory(Option<String>),
+    Shell(Option<String>),
+    Out(Option<String>),
+    Watch(Option<u64>),
 }
 
 pub fn parse_meta_command(line: &str) -> Option<MetaCommand> {
@@ -85,6 +99,15 @@ pub fn parse_meta_command(line: &str) -> Option<MetaCommand> {
     }
 
     let without_slash = &trimmed[1..];
+    if without_slash.starts_with('!') {
+        let shell_cmd = without_slash[1..].trim();
+        return Some(MetaCommand::Shell(if shell_cmd.is_empty() {
+            None
+        } else {
+            Some(shell_cmd.to_string())
+        }));
+    }
+
     let parts: Vec<&str> = without_slash.split_whitespace().collect();
     if parts.is_empty() {
         return None;
@@ -101,6 +124,23 @@ pub fn parse_meta_command(line: &str) -> Option<MetaCommand> {
         "dn" | "dn+" => Some(MetaCommand::ListSchemas(args.first().map(|s| s.to_string()))),
         "dt" | "dt+" => Some(MetaCommand::ListTables(args.first().map(|s| s.to_string()))),
         "dv" | "dv+" => Some(MetaCommand::ListViews(args.first().map(|s| s.to_string()))),
+        "dm" | "dm+" => Some(MetaCommand::ListMaterializedViews(args.first().map(|s| s.to_string()))),
+        "di" | "di+" => {
+            let verbose = cmd == "di+";
+            Some(MetaCommand::ListIndexes(args.first().map(|s| s.to_string()), verbose))
+        }
+        "df" | "df+" => {
+            let verbose = cmd == "df+";
+            Some(MetaCommand::ListFunctions(args.first().map(|s| s.to_string()), verbose))
+        }
+        "ds" | "ds+" => Some(MetaCommand::ListSequences(args.first().map(|s| s.to_string()))),
+        "dsh" => Some(MetaCommand::ListDatashares),
+        "dT" | "dT+" | "dt_type" => {
+            let verbose = cmd.ends_with('+');
+            Some(MetaCommand::ListTypes(args.first().map(|s| s.to_string()), verbose))
+        }
+        "dp" | "z" => Some(MetaCommand::ListPrivileges(args.first().map(|s| s.to_string()))),
+        "dx" | "dx+" => Some(MetaCommand::ListExtensions(args.first().map(|s| s.to_string()))),
         "dex" => Some(MetaCommand::ListExternalTables(args.first().map(|s| s.to_string()))),
         "dep" => {
             if let Some(target) = args.first() {
@@ -114,7 +154,6 @@ pub fn parse_meta_command(line: &str) -> Option<MetaCommand> {
                 Some(MetaCommand::HelpGeneral)
             }
         }
-        "ds" => Some(MetaCommand::ListDatashares),
         "d" | "d+" => {
             if let Some(target) = args.first() {
                 if target.contains('*') || target.contains('?') {
@@ -130,7 +169,22 @@ pub fn parse_meta_command(line: &str) -> Option<MetaCommand> {
                 Some(MetaCommand::ListTables(None))
             }
         }
+        "sf" | "sf+" => {
+            if let Some(target) = args.first() {
+                let verbose = cmd == "sf+";
+                Some(MetaCommand::ShowFunction(target.to_string(), verbose))
+            } else {
+                println!("{}", "Usage: \\sf[+] <function_or_procedure_name>".yellow());
+                None
+            }
+        }
         "du" | "du+" | "dg" | "dg+" => Some(MetaCommand::ListUsers),
+        "cd" => Some(MetaCommand::ChangeDirectory(args.first().map(|s| s.to_string()))),
+        "o" | "out" => Some(MetaCommand::Out(args.first().map(|s| s.to_string()))),
+        "watch" => {
+            let sec = args.first().and_then(|s| s.parse::<u64>().ok());
+            Some(MetaCommand::Watch(sec))
+        }
         "x" => Some(MetaCommand::ToggleExpanded(args.first().map(|s| s.to_string()))),
         "timing" => Some(MetaCommand::ToggleTiming(parse_bool_arg(args.first().copied()))),
         "t" => Some(MetaCommand::ToggleTuplesOnly(parse_bool_arg(args.first().copied()))),
@@ -208,6 +262,51 @@ pub async fn execute_meta_command(
             let sql = conn.dialect.list_views_query(pattern.as_deref());
             run_and_display_meta_query(conn, state, &sql).await?;
         }
+        MetaCommand::ListMaterializedViews(pattern) => {
+            let sql = conn.dialect.list_materialized_views_query(pattern.as_deref());
+            run_and_display_meta_query(conn, state, &sql).await?;
+        }
+        MetaCommand::ListIndexes(pattern, verbose) => {
+            let sql = conn.dialect.list_indexes_query(pattern.as_deref(), verbose);
+            run_and_display_meta_query(conn, state, &sql).await?;
+        }
+        MetaCommand::ListSequences(pattern) => {
+            if conn.dialect.has_external_support() {
+                if let Some(sql) = conn.dialect.list_datashares_query() {
+                    println!("{}", "Listing Amazon Redshift Data Shares (use \\dsh or \\ds):".cyan().bold());
+                    run_and_display_meta_query(conn, state, sql).await?;
+                }
+            } else {
+                let sql = conn.dialect.list_sequences_query(pattern.as_deref());
+                run_and_display_meta_query(conn, state, &sql).await?;
+            }
+        }
+        MetaCommand::ListFunctions(pattern, verbose) => {
+            let sql = conn.dialect.list_functions_query(pattern.as_deref(), verbose);
+            match run_and_display_meta_query(conn, state, &sql).await {
+                Ok(_) => {}
+                Err(_) if conn.dialect.has_external_support() => {
+                    let fallback = crate::dialect::redshift::fallback_redshift_functions_query(pattern.as_deref(), verbose);
+                    run_and_display_meta_query(conn, state, &fallback).await?;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        MetaCommand::ListTypes(pattern, verbose) => {
+            let sql = conn.dialect.list_types_query(pattern.as_deref(), verbose);
+            run_and_display_meta_query(conn, state, &sql).await?;
+        }
+        MetaCommand::ListPrivileges(pattern) => {
+            let sql = conn.dialect.list_privileges_query(pattern.as_deref());
+            run_and_display_meta_query(conn, state, &sql).await?;
+        }
+        MetaCommand::ListExtensions(_pattern) => {
+            if let Some(sql) = conn.dialect.list_extensions_query() {
+                run_and_display_meta_query(conn, state, sql).await?;
+            } else {
+                println!("{}", "Extensions are not supported on Amazon Redshift.".yellow());
+            }
+        }
         MetaCommand::ListExternalTables(pattern) => {
             if let Some(sql) = conn.dialect.list_external_tables_query(pattern.as_deref()) {
                 println!("{}", "Listing Amazon Redshift Spectrum External Tables:".cyan().bold());
@@ -234,6 +333,9 @@ pub async fn execute_meta_command(
         }
         MetaCommand::Describe(schema, table) => {
             describe_target(conn, state, schema.as_deref(), &table).await?;
+        }
+        MetaCommand::ShowFunction(func_name, verbose) => {
+            handle_show_function(&func_name, verbose, conn).await?;
         }
         MetaCommand::ListUsers => {
             let sql = conn.dialect.list_users_query();
@@ -299,6 +401,18 @@ pub async fn execute_meta_command(
         MetaCommand::Echo(msg) => {
             println!("{}", msg);
         }
+        MetaCommand::ChangeDirectory(dir) => {
+            handle_cd(dir.as_deref())?;
+        }
+        MetaCommand::Shell(cmd) => {
+            handle_shell(cmd.as_deref())?;
+        }
+        MetaCommand::Out(file) => {
+            handle_out(file.as_deref(), state)?;
+        }
+        MetaCommand::Watch(seconds) => {
+            handle_watch(seconds, conn, state).await?;
+        }
     }
     Ok(true)
 }
@@ -312,7 +426,15 @@ async fn run_and_display_meta_query(
     let rows = conn.client.query(sql, &[]).await?;
     let duration = start.elapsed();
     let res = QueryResult::from_rows(&rows, duration, None, &state.null_str);
-    res.display(state.format, state.timing, state.tuples_only, state.border, state.pager, state.expanded)?;
+    res.display_target(
+        state.format,
+        state.timing,
+        state.tuples_only,
+        state.border,
+        state.pager,
+        state.expanded,
+        state.output_file.as_deref(),
+    )?;
     Ok(())
 }
 
@@ -373,7 +495,7 @@ async fn describe_target(
             };
             println!("{}", format!("Table \"{}\":", full_name).cyan().bold());
             let res = QueryResult::from_rows(&rows, Duration::from_millis(0), None, &state.null_str);
-            res.display(state.format, state.timing, state.tuples_only, state.border, PagerMode::Off, state.expanded)?;
+            res.display_target(state.format, state.timing, state.tuples_only, state.border, PagerMode::Off, state.expanded, state.output_file.as_deref())?;
             return Ok(());
         }
         _ => {}
@@ -411,7 +533,7 @@ async fn describe_target(
             };
             println!("{}", format!("Table \"{}\":", full_name).cyan().bold());
             let res = QueryResult::from_rows(&rows, Duration::from_millis(0), None, &state.null_str);
-            res.display(state.format, state.timing, state.tuples_only, state.border, PagerMode::Off, state.expanded)?;
+            res.display_target(state.format, state.timing, state.tuples_only, state.border, PagerMode::Off, state.expanded, state.output_file.as_deref())?;
             return Ok(());
         }
     }
@@ -432,7 +554,7 @@ async fn describe_target(
                             .bold()
                     );
                     let res = QueryResult::from_rows(&rows, Duration::from_millis(0), None, &state.null_str);
-                    res.display(state.format, state.timing, state.tuples_only, state.border, PagerMode::Off, state.expanded)?;
+                    res.display_target(state.format, state.timing, state.tuples_only, state.border, PagerMode::Off, state.expanded, state.output_file.as_deref())?;
 
                     // Also show partition location
                     if let Some(part_sql) = conn.dialect.list_external_partitions_query(schema, table) {
@@ -440,7 +562,7 @@ async fn describe_target(
                             if !part_rows.is_empty() {
                                 println!("\n{}", "Sample External Partitions:".cyan());
                                 let part_res = QueryResult::from_rows(&part_rows, Duration::from_millis(0), None, &state.null_str);
-                                part_res.display(state.format, false, state.tuples_only, state.border, PagerMode::Off, state.expanded)?;
+                                part_res.display_target(state.format, false, state.tuples_only, state.border, PagerMode::Off, state.expanded, state.output_file.as_deref())?;
                             }
                         }
                     }
@@ -486,7 +608,7 @@ async fn describe_target(
                 };
                 println!("{}", format!("Table \"{}\":", full_name).cyan().bold());
                 let res = QueryResult::from_rows(&rows, Duration::from_millis(0), None, &state.null_str);
-                res.display(state.format, state.timing, state.tuples_only, state.border, PagerMode::Off, state.expanded)?;
+                res.display_target(state.format, state.timing, state.tuples_only, state.border, PagerMode::Off, state.expanded, state.output_file.as_deref())?;
                 return Ok(());
             }
         }
@@ -498,6 +620,138 @@ async fn describe_target(
         format!("Did not find any relation named \"{}\".", table).yellow()
     );
 
+    Ok(())
+}
+
+async fn handle_show_function(
+    func_name: &str,
+    verbose: bool,
+    conn: &DbConnection,
+) -> Result<()> {
+    let sql = conn.dialect.show_function_query(func_name);
+    if let Ok(rows) = conn.client.query(&sql, &[]).await {
+        if !rows.is_empty() {
+            let src: &str = rows[0].get(0);
+            if verbose {
+                for (idx, line) in src.lines().enumerate() {
+                    println!("{:4}: {}", idx + 1, line);
+                }
+            } else {
+                println!("{}", src);
+            }
+            return Ok(());
+        }
+    }
+
+    // If on Redshift and not found in pg_proc, try SHOW PROCEDURE func_name
+    if conn.dialect.has_external_support() {
+        let show_proc = format!("SHOW PROCEDURE {};", func_name);
+        if let Ok(rows) = conn.client.query(&show_proc, &[]).await {
+            if !rows.is_empty() {
+                let mut full_ddl = String::new();
+                for r in rows {
+                    let part: &str = r.get(0);
+                    full_ddl.push_str(part);
+                    full_ddl.push('\n');
+                }
+                if verbose {
+                    for (idx, line) in full_ddl.lines().enumerate() {
+                        println!("{:4}: {}", idx + 1, line);
+                    }
+                } else {
+                    println!("{}", full_ddl);
+                }
+                return Ok(());
+            }
+        }
+    }
+
+    println!("{}", format!("Did not find any function or procedure named \"{}\".", func_name).yellow());
+    Ok(())
+}
+
+fn handle_out(filepath: Option<&str>, state: &mut AppState) -> Result<()> {
+    match filepath {
+        Some(f) if !f.trim().is_empty() => {
+            let path = f.trim();
+            fs::File::create(path).map_err(RsqlError::Io)?;
+            println!("Output redirected to \"{}\".", path);
+            state.output_file = Some(path.to_string());
+        }
+        _ => {
+            state.output_file = None;
+            println!("Output redirected to stdout.");
+        }
+    }
+    Ok(())
+}
+
+fn handle_shell(cmd: Option<&str>) -> Result<()> {
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+    let mut process = std::process::Command::new(&shell);
+    if let Some(command) = cmd {
+        process.arg("-c").arg(command);
+    }
+    let status = process.status().map_err(RsqlError::Io)?;
+    if !status.success() {
+        if let Some(code) = status.code() {
+            eprintln!("Command failed with exit code {}", code);
+        }
+    }
+    Ok(())
+}
+
+fn handle_cd(dir: Option<&str>) -> Result<()> {
+    let target = match dir {
+        Some(d) => {
+            if d.starts_with('~') {
+                if let Ok(home) = std::env::var("HOME") {
+                    d.replacen('~', &home, 1)
+                } else {
+                    d.to_string()
+                }
+            } else {
+                d.to_string()
+            }
+        }
+        None => std::env::var("HOME").unwrap_or_else(|_| ".".to_string()),
+    };
+    std::env::set_current_dir(&target).map_err(RsqlError::Io)?;
+    if let Ok(current) = std::env::current_dir() {
+        println!("Current directory is {}", current.display());
+    }
+    Ok(())
+}
+
+async fn handle_watch(
+    seconds: Option<u64>,
+    conn: &mut DbConnection,
+    state: &AppState,
+) -> Result<()> {
+    if state.last_query.trim().is_empty() {
+        println!("No query buffer to watch.");
+        return Ok(());
+    }
+    let interval = Duration::from_secs(seconds.unwrap_or(2));
+    let sql = state.last_query.clone();
+
+    println!("Watching query every {:?} (press Ctrl+C to cancel)...", interval);
+    loop {
+        let now_str = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        println!("{}", format!("---- {} (every {:?}) ----", now_str, interval).cyan());
+
+        if let Err(e) = crate::output::execute_and_display_query(&conn.client, &sql, state, false).await {
+            eprintln!("{}", format!("Query error: {}", e).red());
+        }
+
+        tokio::select! {
+            _ = tokio::time::sleep(interval) => {}
+            _ = tokio::signal::ctrl_c() => {
+                println!("\nWatch cancelled.");
+                break;
+            }
+        }
+    }
     Ok(())
 }
 
@@ -532,13 +786,25 @@ fn print_general_help(has_external: bool) {
     println!("  \\t [on|off]        toggle tuples only (no headers/footers)");
     println!("  \\e [file]          edit the current query buffer in $EDITOR");
     println!("  \\i <file>          execute commands from file");
+    println!("  \\o [file]          redirect query output to file (or stdout)");
+    println!("  \\watch [sec]       execute query repeatedly every N seconds (default: 2)");
+    println!("  \\cd [dir]          change current working directory");
+    println!("  \\! [cmd]           execute shell command");
     println!("  \\pset <opt> [val]  set table options (format, null, tuples_only, fieldsep, border)");
     println!();
     println!("{}", "Informational Queries:".bold());
-    println!("  \\l, \\list          list all databases (including datashares)");
-    println!("  \\dn [pattern]      list schemas (local, external, shared)");
-    println!("  \\dt [pattern]      list tables (local + external)");
-    println!("  \\dv [pattern]      list views and materialized views");
+    println!("  \\l, \\list          list all databases");
+    println!("  \\dn [pattern]      list schemas");
+    println!("  \\dt, \\dt+ [pat]    list tables");
+    println!("  \\dv, \\dv+ [pat]    list views");
+    println!("  \\dm, \\dm+ [pat]    list materialized views");
+    println!("  \\di, \\di+ [pat]    list indexes");
+    println!("  \\ds, \\ds+ [pat]    list sequences");
+    println!("  \\df, \\df+ [pat]    list functions and stored procedures");
+    println!("  \\sf, \\sf+ <name>   show function / stored procedure source code");
+    println!("  \\dT, \\dT+ [pat]    list data types");
+    println!("  \\dp, \\z [pat]      list privileges / access grants");
+    println!("  \\dx, \\dx+          list installed extensions");
     println!("  \\d <relation>      describe table columns, types, nullability");
     println!("  \\du, \\dg           list users and roles");
 
@@ -547,7 +813,7 @@ fn print_general_help(has_external: bool) {
         println!("{}", "Amazon Redshift Lakehouse & Spectrum commands:".cyan().bold());
         println!("  \\dex [pattern]     list Redshift Spectrum external tables & S3 locations");
         println!("  \\dep <schema.tbl>  list partitions for Redshift external table");
-        println!("  \\ds                list Redshift Data Shares (cross-cluster/lakehouse)");
+        println!("  \\dsh, \\ds          list Redshift Data Shares (cross-cluster/lakehouse)");
     }
     println!();
 }

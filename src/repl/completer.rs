@@ -80,9 +80,12 @@ pub const SQL_KEYWORDS: &[&str] = &[
 ];
 
 pub const META_COMMANDS: &[&str] = &[
-    "\\q", "\\?", "\\h", "\\l", "\\dn", "\\dt", "\\dv", "\\d", "\\dex", "\\dep",
-    "\\ds", "\\du", "\\x", "\\timing", "\\conninfo", "\\c", "\\e", "\\i", "\\pset",
-    "\\set", "\\echo", "\\copy", "\\edit",
+    "\\q", "\\?", "\\h", "\\l", "\\l+", "\\dn", "\\dn+", "\\dt", "\\dt+",
+    "\\dv", "\\dv+", "\\dm", "\\dm+", "\\di", "\\di+", "\\ds", "\\ds+",
+    "\\df", "\\df+", "\\sf", "\\sf+", "\\dT", "\\dT+", "\\dp", "\\z",
+    "\\dx", "\\dx+", "\\d", "\\d+", "\\dex", "\\dep", "\\dsh", "\\du", "\\du+",
+    "\\dg", "\\dg+", "\\x", "\\timing", "\\conninfo", "\\c", "\\e", "\\i",
+    "\\pset", "\\set", "\\echo", "\\copy", "\\edit", "\\cd", "\\o", "\\watch",
 ];
 
 pub const PSET_VARS: &[&str] = &[
@@ -176,15 +179,24 @@ impl SqlCompleter {
                     let dbs = self.cache.read().map(|c| c.databases.clone()).unwrap_or_default();
                     (arg_start, filter_candidates(&dbs, arg_trimmed, true))
                 }
-                "\\dn" => {
+                "\\dn" | "\\dn+" => {
                     let schemas = self.cache.read().map(|c| c.schemas.clone()).unwrap_or_default();
                     (arg_start, filter_candidates(&schemas, arg_trimmed, true))
                 }
-                "\\d" | "\\dt" | "\\dv" | "\\ds" | "\\dex" | "\\dep" => {
+                "\\d" | "\\d+" | "\\dt" | "\\dt+" | "\\dv" | "\\dv+" | "\\dm" | "\\dm+" | "\\di" | "\\di+" | "\\ds" | "\\ds+" | "\\dex" | "\\dep" | "\\dp" | "\\z" => {
                     let mut candidates = Vec::new();
                     if let Ok(c) = self.cache.read() {
                         candidates.extend(c.tables.clone());
                         candidates.extend(c.views.clone());
+                        candidates.extend(c.schemas.clone());
+                    }
+                    candidates.sort();
+                    candidates.dedup();
+                    (arg_start, filter_candidates(&candidates, arg_trimmed, true))
+                }
+                "\\df" | "\\df+" | "\\sf" | "\\sf+" => {
+                    let mut candidates = Vec::new();
+                    if let Ok(c) = self.cache.read() {
                         candidates.extend(c.schemas.clone());
                     }
                     candidates.sort();

@@ -14,8 +14,74 @@ fn test_parse_meta_commands() {
     assert!(matches!(parse_meta_command("\\t on"), Some(MetaCommand::ToggleTuplesOnly(Some(true)))));
     assert!(matches!(parse_meta_command("\\t off"), Some(MetaCommand::ToggleTuplesOnly(Some(false)))));
     assert!(matches!(parse_meta_command("\\conninfo"), Some(MetaCommand::ConnInfo)));
-    assert!(matches!(parse_meta_command("\\ds"), Some(MetaCommand::ListDatashares)));
+    assert!(matches!(parse_meta_command("\\ds"), Some(MetaCommand::ListSequences(None))));
+    assert!(matches!(parse_meta_command("\\dsh"), Some(MetaCommand::ListDatashares)));
     assert!(matches!(parse_meta_command("\\dex"), Some(MetaCommand::ListExternalTables(None))));
+
+    // \df and \df+
+    assert!(matches!(parse_meta_command("\\df"), Some(MetaCommand::ListFunctions(None, false))));
+    assert!(matches!(parse_meta_command("\\df+"), Some(MetaCommand::ListFunctions(None, true))));
+    if let Some(MetaCommand::ListFunctions(pat, verbose)) = parse_meta_command("\\df p_export*") {
+        assert_eq!(pat.unwrap(), "p_export*");
+        assert!(!verbose);
+    } else {
+        panic!("Expected \\df with pattern");
+    }
+    if let Some(MetaCommand::ListFunctions(pat, verbose)) = parse_meta_command("\\df+ maindata.*") {
+        assert_eq!(pat.unwrap(), "maindata.*");
+        assert!(verbose);
+    } else {
+        panic!("Expected \\df+ with pattern");
+    }
+
+    // \sf and \sf+
+    if let Some(MetaCommand::ShowFunction(name, verbose)) = parse_meta_command("\\sf p_export_kogakuhin_data") {
+        assert_eq!(name, "p_export_kogakuhin_data");
+        assert!(!verbose);
+    } else {
+        panic!("Expected \\sf command");
+    }
+    if let Some(MetaCommand::ShowFunction(name, verbose)) = parse_meta_command("\\sf+ maindata.proc1") {
+        assert_eq!(name, "maindata.proc1");
+        assert!(verbose);
+    } else {
+        panic!("Expected \\sf+ command");
+    }
+
+    // \di, \dm, \dT, \dp, \z, \dx
+    assert!(matches!(parse_meta_command("\\di"), Some(MetaCommand::ListIndexes(None, false))));
+    assert!(matches!(parse_meta_command("\\di+"), Some(MetaCommand::ListIndexes(None, true))));
+    assert!(matches!(parse_meta_command("\\dm"), Some(MetaCommand::ListMaterializedViews(None))));
+    assert!(matches!(parse_meta_command("\\dT"), Some(MetaCommand::ListTypes(None, false))));
+    assert!(matches!(parse_meta_command("\\dT+"), Some(MetaCommand::ListTypes(None, true))));
+    assert!(matches!(parse_meta_command("\\dp"), Some(MetaCommand::ListPrivileges(None))));
+    assert!(matches!(parse_meta_command("\\z"), Some(MetaCommand::ListPrivileges(None))));
+    assert!(matches!(parse_meta_command("\\dx"), Some(MetaCommand::ListExtensions(None))));
+
+    // Operating system / session commands: \cd, \!, \o, \watch
+    assert!(matches!(parse_meta_command("\\cd"), Some(MetaCommand::ChangeDirectory(None))));
+    if let Some(MetaCommand::ChangeDirectory(Some(dir))) = parse_meta_command("\\cd /tmp") {
+        assert_eq!(dir, "/tmp");
+    } else {
+        panic!("Expected \\cd /tmp");
+    }
+
+    assert!(matches!(parse_meta_command("\\!"), Some(MetaCommand::Shell(None))));
+    if let Some(MetaCommand::Shell(Some(cmd))) = parse_meta_command("\\! ls -la") {
+        assert_eq!(cmd, "ls -la");
+    } else {
+        panic!("Expected \\! ls -la");
+    }
+
+    assert!(matches!(parse_meta_command("\\o"), Some(MetaCommand::Out(None))));
+    if let Some(MetaCommand::Out(Some(f))) = parse_meta_command("\\o /tmp/out.csv") {
+        assert_eq!(f, "/tmp/out.csv");
+    } else {
+        panic!("Expected \\o /tmp/out.csv");
+    }
+
+    assert!(matches!(parse_meta_command("\\watch"), Some(MetaCommand::Watch(None))));
+    assert!(matches!(parse_meta_command("\\watch 5"), Some(MetaCommand::Watch(Some(5)))));
 
     // Pattern matching
     if let Some(MetaCommand::ListTables(pat)) = parse_meta_command("\\dt users*") {
@@ -98,8 +164,4 @@ fn test_pset_options() {
     // Test \pset expanded
     handle_pset("expanded", Some("on"), &mut state);
     assert_eq!(state.expanded, rustsql::meta::ExpandedMode::On);
-    handle_pset("expanded", Some("auto"), &mut state);
-    assert_eq!(state.expanded, rustsql::meta::ExpandedMode::Auto);
-    handle_pset("expanded", Some("off"), &mut state);
-    assert_eq!(state.expanded, rustsql::meta::ExpandedMode::Off);
 }

@@ -19,6 +19,14 @@ pub trait Dialect: Send + Sync {
     fn list_schemas_query(&self, pattern: Option<&str>) -> String;
     fn list_tables_query(&self, pattern: Option<&str>) -> String;
     fn list_views_query(&self, pattern: Option<&str>) -> String;
+    fn list_materialized_views_query(&self, pattern: Option<&str>) -> String;
+    fn list_indexes_query(&self, pattern: Option<&str>, verbose: bool) -> String;
+    fn list_sequences_query(&self, pattern: Option<&str>) -> String;
+    fn list_functions_query(&self, pattern: Option<&str>, verbose: bool) -> String;
+    fn list_types_query(&self, pattern: Option<&str>, verbose: bool) -> String;
+    fn list_privileges_query(&self, pattern: Option<&str>) -> String;
+    fn list_extensions_query(&self) -> Option<&'static str>;
+    fn show_function_query(&self, name: &str) -> String;
     fn list_users_query(&self) -> &'static str;
 
     fn describe_table_query(&self, schema: Option<&str>, table: &str) -> String;

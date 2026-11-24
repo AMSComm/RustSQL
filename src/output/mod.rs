@@ -82,6 +82,19 @@ impl QueryResult {
         pager_mode: PagerMode,
         expanded: ExpandedMode,
     ) -> Result<()> {
+        self.display_target(format, show_timing, tuples_only, border, pager_mode, expanded, None)
+    }
+
+    pub fn display_target(
+        &self,
+        format: OutputFormat,
+        show_timing: bool,
+        tuples_only: bool,
+        border: u8,
+        pager_mode: PagerMode,
+        expanded: ExpandedMode,
+        output_file: Option<&str>,
+    ) -> Result<()> {
         let is_expanded = match expanded {
             ExpandedMode::On => true,
             ExpandedMode::Auto => {
@@ -115,7 +128,16 @@ impl QueryResult {
             final_output.push_str(&timing_str);
         }
 
-        pager::display_with_pager(&final_output, pager_mode)?;
+        if let Some(file_path) = output_file {
+            use std::io::Write;
+            let mut f = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(file_path)?;
+            f.write_all(final_output.as_bytes())?;
+        } else {
+            pager::display_with_pager(&final_output, pager_mode)?;
+        }
         Ok(())
     }
 }
@@ -402,13 +424,14 @@ pub async fn execute_and_display_query(
                         rows_affected: Some(rows_affected),
                         duration,
                     };
-                    res.display(
+                    res.display_target(
                         state.format,
                         state.timing,
                         state.tuples_only,
                         state.border,
                         pager_mode,
                         state.expanded,
+                        state.output_file.as_deref(),
                     )?;
                     returned_any_row = false;
                 } else if !state.quiet && !state.tuples_only {
@@ -421,18 +444,29 @@ pub async fn execute_and_display_query(
                             rows_affected: Some(0),
                             duration,
                         };
-                        res.display(
+                        res.display_target(
                             state.format,
                             state.timing,
                             state.tuples_only,
                             state.border,
                             pager_mode,
                             state.expanded,
+                            state.output_file.as_deref(),
                         )?;
                     } else if !cmd_tag.is_empty() {
-                        println!("{}", cmd_tag);
-                        if state.timing {
-                            println!("Time: {:.3} ms", duration.as_secs_f64() * 1000.0);
+                        if let Some(ref path) = state.output_file {
+                            use std::io::Write;
+                            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+                                let _ = writeln!(f, "{}", cmd_tag);
+                                if state.timing {
+                                    let _ = writeln!(f, "Time: {:.3} ms", duration.as_secs_f64() * 1000.0);
+                                }
+                            }
+                        } else {
+                            println!("{}", cmd_tag);
+                            if state.timing {
+                                println!("Time: {:.3} ms", duration.as_secs_f64() * 1000.0);
+                            }
                         }
                     }
                 }
