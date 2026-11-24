@@ -16,26 +16,31 @@ permissions:
 
 jobs:
   build-release:
-    name: Build (${{ matrix.target }})
+    name: Build (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - target: aarch64-apple-darwin
+          - name: macOS (Universal M1/M2/M3 & Intel)
+            id: macos
             os: macos-latest
+            targets: aarch64-apple-darwin,x86_64-apple-darwin
             use-cross: false
-          - target: x86_64-apple-darwin
-            os: macos-latest
-            use-cross: false
-          - target: x86_64-unknown-linux-gnu
+          - name: Linux (x86_64)
+            id: linux-x86
             os: ubuntu-latest
+            targets: x86_64-unknown-linux-gnu
             use-cross: false
-          - target: aarch64-unknown-linux-gnu
+          - name: Linux (ARM64)
+            id: linux-arm64
             os: ubuntu-latest
+            targets: aarch64-unknown-linux-gnu
             use-cross: true
-          - target: x86_64-pc-windows-msvc
+          - name: Windows (x86_64)
+            id: windows-x86
             os: windows-latest
+            targets: x86_64-pc-windows-msvc
             use-cross: false
 
     steps:
@@ -50,7 +55,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
+          targets: ${{ matrix.targets }}
 
       - name: Install Linux build dependencies
         if: matrix.os == 'ubuntu-latest' && !matrix.use-cross
@@ -65,22 +70,30 @@ jobs:
       - name: Build release binary
         shell: bash
         run: |
-          if [ "${{ matrix.use-cross }}" = "true" ]; then
-            cross build --release --target ${{ matrix.target }}
-          else
-            cargo build --release --target ${{ matrix.target }}
-          fi
+          IFS=',' read -ra TARGETS <<< "${{ matrix.targets }}"
+          for target in "${TARGETS[@]}"; do
+            echo "Building for target: $target"
+            if [ "${{ matrix.use-cross }}" = "true" ]; then
+              cross build --release --target "$target"
+            else
+              cargo build --release --target "$target"
+            fi
+          done
 
       - name: Package release artifact
         shell: bash
         run: |
           TAG_NAME="${{ github.event.inputs.tag || github.ref_name }}"
-          python3 .github/workflows/package.py "${{ matrix.target }}" "$TAG_NAME"
+          IFS=',' read -ra TARGETS <<< "${{ matrix.targets }}"
+          for target in "${TARGETS[@]}"; do
+            echo "Packaging target: $target"
+            python3 .github/workflows/package.py "$target" "$TAG_NAME"
+          done
 
       - name: Upload artifact to job
         uses: actions/upload-artifact@v4
         with:
-          name: assets-${{ matrix.target }}
+          name: assets-${{ matrix.id }}
           path: artifacts/*
 
   publish-release:
