@@ -185,3 +185,42 @@ fn test_function_and_procedure_completion() {
     assert!(matches.iter().any(|m| m.display == "analytics.events"));
     assert!(matches.iter().any(|m| m.display == "analytics.agg_events"));
 }
+
+#[test]
+fn test_table_and_alias_column_completion_in_where() {
+    let completer = SqlCompleter::new();
+    completer.set_table_columns(
+        "public.users",
+        vec![
+            "id".to_string(),
+            "email".to_string(),
+            "status".to_string(),
+        ],
+    );
+    completer.set_table_columns(
+        "orders",
+        vec!["order_id".to_string(), "total_amount".to_string()],
+    );
+
+    // WHERE after space -> columns of referenced table
+    let (_, matches) = completer.complete_input("SELECT * FROM users WHERE ", 26);
+    assert!(matches.iter().any(|m| m.display == "email"));
+    assert!(matches.iter().any(|m| m.display == "status"));
+    assert!(!matches.iter().any(|m| m.display == "total_amount"));
+
+    // WHERE with prefix -> matching column
+    let (start, matches) = completer.complete_input("SELECT * FROM public.users WHERE em", 35);
+    assert_eq!(start, 33);
+    assert!(matches.iter().any(|m| m.display == "email"));
+
+    // Alias dot completion in WHERE / ON
+    let (start, matches) =
+        completer.complete_input("SELECT * FROM public.users u JOIN orders o ON u.", 48);
+    assert_eq!(start, 46);
+    assert!(matches.iter().any(|m| m.display == "u.email"));
+    assert!(!matches.iter().any(|m| m.display == "u.total_amount"));
+
+    // ORDER BY completion
+    let (_, matches) = completer.complete_input("SELECT * FROM orders ORDER BY ", 30);
+    assert!(matches.iter().any(|m| m.display == "total_amount"));
+}

@@ -7,7 +7,7 @@ use crate::dialect::Dialect;
 use crate::error::Result;
 use crate::meta::{execute_meta_command, parse_meta_command, AppState};
 use colored::Colorize;
-use completer::{SchemaLoader, SqlCompleter};
+use completer::{LoadRequest, SchemaLoader, SqlCompleter};
 use highlighter::SqlHighlighter;
 use prompt::PromptBuilder;
 use rustyline::completion::{Completer, Pair};
@@ -90,7 +90,7 @@ pub async fn run_interactive_repl(
 ) -> Result<()> {
     let history_path = dirs::home_dir().map(|h| h.join(".ruql_history"));
 
-    let (schema_tx, mut schema_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let (schema_tx, mut schema_rx) = tokio::sync::mpsc::unbounded_channel::<LoadRequest>();
     let schema_notify = Arc::new((Mutex::new(()), Condvar::new()));
     let completer = SqlCompleter::with_loader(SchemaLoader {
         tx: schema_tx,
@@ -100,36 +100,48 @@ pub async fn run_interactive_repl(
     let (conn_watch_tx, conn_watch_rx) =
         tokio::sync::watch::channel((Arc::clone(&conn.client), Arc::clone(&conn.dialect)));
 
-    // Background lazy loader for non-default schemas when user types `schema.`
+    // Background lazy loader for non-default schemas and table columns
     let bg_completer = completer.clone();
     let bg_notify = Arc::clone(&schema_notify);
     tokio::spawn(async move {
-        while let Some(schema) = schema_rx.recv().await {
-            let schema_lower = schema.trim().to_lowercase();
-            let skip = bg_completer
-                .cache
-                .read()
-                .map(|c| c.catalog_access_denied || c.loaded_schemas.contains(&schema_lower))
-                .unwrap_or(true);
-            if skip {
-                bg_notify.1.notify_all();
-                continue;
-            }
-
+        while let Some(req) = schema_rx.recv().await {
             let (client, dialect) = {
                 let guard = conn_watch_rx.borrow();
                 (Arc::clone(&guard.0), Arc::clone(&guard.1))
             };
 
-            match fetch_schema_objects(&client, &*dialect, &schema, false).await {
-                Ok((tables, views, functions)) => {
-                    bg_completer.merge_schema_objects(&schema, tables, views, functions);
+            match req {
+                LoadRequest::Schema(schema) => {
+                    let schema_lower = schema.trim().to_lowercase();
+                    let skip = bg_completer
+                        .cache
+                        .read()
+                        .map(|c| c.catalog_access_denied || c.loaded_schemas.contains(&schema_lower))
+                        .unwrap_or(true);
+                    if !skip {
+                        match fetch_schema_objects(&client, &*dialect, &schema, false).await {
+                            Ok((tables, views, functions)) => {
+                                bg_completer.merge_schema_objects(&schema, tables, views, functions);
+                            }
+                            Err(true) => bg_completer.mark_catalog_access_denied(),
+                            Err(false) => bg_completer.mark_schema_loaded(&schema),
+                        }
+                    }
                 }
-                Err(true) => {
-                    bg_completer.mark_catalog_access_denied();
-                }
-                Err(false) => {
-                    bg_completer.mark_schema_loaded(&schema);
+                LoadRequest::Table(table) => {
+                    let table_lower = table.trim().to_lowercase();
+                    let skip = bg_completer
+                        .cache
+                        .read()
+                        .map(|c| c.catalog_access_denied || c.loaded_tables.contains(&table_lower))
+                        .unwrap_or(true);
+                    if !skip {
+                        match fetch_table_columns(&client, &*dialect, &table).await {
+                            Ok(cols) => bg_completer.set_table_columns(&table, cols),
+                            Err(true) => bg_completer.mark_catalog_access_denied(),
+                            Err(false) => bg_completer.mark_table_loaded(&table),
+                        }
+                    }
                 }
             }
             bg_notify.1.notify_all();
@@ -417,6 +429,47 @@ fn collect_schema_objects(
         }
         Err(e) => Err(is_permission_error(&e)),
     }
+}
+
+/// Fetches column names for a single table (supports `schema.table` or `table`).
+/// Returns `Err(true)` if catalog access was denied by permissions.
+async fn fetch_table_columns(
+    client: &tokio_postgres::Client,
+    dialect: &dyn Dialect,
+    table: &str,
+) -> std::result::Result<Vec<String>, bool> {
+    let clean = table.trim().replace('\'', "''");
+    let (schema, tbl_name) = match clean.split_once('.') {
+        Some((s, t)) => (Some(s), t),
+        None => (None, clean.as_str()),
+    };
+
+    let sql = dialect.describe_table_query(schema, tbl_name);
+    let mut cols = Vec::new();
+    match client.query(&sql, &[]).await {
+        Ok(rows) => {
+            for r in rows {
+                if let Ok(col) = r.try_get::<_, String>(0) {
+                    cols.push(col);
+                }
+            }
+        }
+        Err(e) => return Err(is_permission_error(&e)),
+    }
+
+    if cols.is_empty() {
+        if let Some(ext_sql) = dialect.describe_external_table_query(schema, tbl_name) {
+            if let Ok(rows) = client.query(&ext_sql, &[]).await {
+                for r in rows {
+                    if let Ok(col) = r.try_get::<_, String>(0) {
+                        cols.push(col);
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(cols)
 }
 
 /// Fetches tables, views, and functions/procedures for a single schema.

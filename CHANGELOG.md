@@ -5,6 +5,15 @@ All notable changes to **RustSQL (`ruql`)** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.0.6] - 2026-11-26
+
+### ⚡ Autocomplete Improvements
+
+- **Context-Aware Column Autocomplete (`WHERE`, `ON`, `SET`, `ORDER BY`, `GROUP BY`, `SELECT`)**: Automatically extracts referenced tables and aliases from the current query, lazily loads their columns on demand (250ms fast-path wait, cached per table), and suggests matching columns.
+- **Alias & Table-Qualified Column Completion**: Supports `<alias>.<column>` and `<table>.<column>` completion (e.g., `SELECT * FROM public.users u JOIN orders o ON u.<Tab>`).
+
+---
+
 ## [v0.0.5] - 2026-11-26
 
 ### ⚡ Performance & Autocomplete Improvements

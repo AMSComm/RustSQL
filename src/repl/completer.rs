@@ -1,6 +1,6 @@
 use rustyline::completion::{Completer, Pair};
 use rustyline::Context;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Condvar, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
@@ -12,13 +12,21 @@ pub struct CompletionCache {
     pub functions: Vec<String>,
     pub databases: Vec<String>,
     pub columns: Vec<String>,
+    pub table_columns: HashMap<String, Vec<String>>,
     pub loaded_schemas: HashSet<String>,
+    pub loaded_tables: HashSet<String>,
     pub catalog_access_denied: bool,
+}
+
+#[derive(Clone, Debug)]
+pub enum LoadRequest {
+    Schema(String),
+    Table(String),
 }
 
 #[derive(Clone)]
 pub struct SchemaLoader {
-    pub tx: tokio::sync::mpsc::UnboundedSender<String>,
+    pub tx: tokio::sync::mpsc::UnboundedSender<LoadRequest>,
     pub notify: Arc<(Mutex<()>, Condvar)>,
 }
 
@@ -174,24 +182,34 @@ impl SqlCompleter {
         }
     }
 
-    fn ensure_schema_loaded(&self, schema: &str) {
-        let schema_lower = schema.trim().to_lowercase();
-        if schema_lower.is_empty() {
-            return;
+    pub fn set_table_columns(&self, table: &str, columns: Vec<String>) {
+        if let Ok(mut c) = self.cache.write() {
+            let key = table.to_lowercase();
+            let mut cols = columns;
+            cols.sort();
+            cols.dedup();
+            if let Some((_, short_name)) = key.split_once('.') {
+                c.table_columns
+                    .entry(short_name.to_string())
+                    .or_insert_with(|| cols.clone());
+            }
+            c.table_columns.insert(key.clone(), cols);
+            c.loaded_tables.insert(key);
         }
+    }
 
-        let should_load = self
-            .cache
-            .read()
-            .map(|c| !c.catalog_access_denied && !c.loaded_schemas.contains(&schema_lower))
-            .unwrap_or(false);
-
-        if !should_load {
-            return;
+    pub fn mark_table_loaded(&self, table: &str) {
+        if let Ok(mut c) = self.cache.write() {
+            c.loaded_tables.insert(table.to_lowercase());
         }
+    }
 
+    fn wait_for_load<F>(&self, req: LoadRequest, is_done: F)
+    where
+        F: Fn(&CompletionCache) -> bool,
+    {
         if let Some(ref loader) = self.loader {
-            let _ = loader.tx.send(schema.to_string());
+            let _ = loader.tx.send(req);
             let (lock, cvar) = &*loader.notify;
             if let Ok(mut guard) = lock.lock() {
                 let deadline = Instant::now() + Duration::from_millis(250);
@@ -199,7 +217,7 @@ impl SqlCompleter {
                     let done = self
                         .cache
                         .read()
-                        .map(|c| c.catalog_access_denied || c.loaded_schemas.contains(&schema_lower))
+                        .map(|c| c.catalog_access_denied || is_done(&c))
                         .unwrap_or(true);
                     if done {
                         break;
@@ -216,6 +234,74 @@ impl SqlCompleter {
                 }
             }
         }
+    }
+
+    fn ensure_schema_loaded(&self, schema: &str) {
+        let schema_lower = schema.trim().to_lowercase();
+        if schema_lower.is_empty() {
+            return;
+        }
+
+        let should_load = self
+            .cache
+            .read()
+            .map(|c| !c.catalog_access_denied && !c.loaded_schemas.contains(&schema_lower))
+            .unwrap_or(false);
+
+        if should_load {
+            self.wait_for_load(LoadRequest::Schema(schema.to_string()), |c| {
+                c.loaded_schemas.contains(&schema_lower)
+            });
+        }
+    }
+
+    fn ensure_table_loaded(&self, table: &str) {
+        let table_lower = table.trim().to_lowercase();
+        if table_lower.is_empty() {
+            return;
+        }
+
+        let should_load = self
+            .cache
+            .read()
+            .map(|c| !c.catalog_access_denied && !c.loaded_tables.contains(&table_lower))
+            .unwrap_or(false);
+
+        if should_load {
+            self.wait_for_load(LoadRequest::Table(table.to_string()), |c| {
+                c.loaded_tables.contains(&table_lower)
+            });
+        }
+    }
+
+    fn ensure_tables_loaded(&self, refs: &[(String, Option<String>)]) {
+        for (table, _) in refs {
+            self.ensure_table_loaded(table);
+        }
+    }
+
+    fn columns_for_tables(&self, refs: &[(String, Option<String>)]) -> Vec<String> {
+        let mut cols = Vec::new();
+        if let Ok(c) = self.cache.read() {
+            for (table, _) in refs {
+                let key = table.to_lowercase();
+                if let Some(tcols) = c.table_columns.get(&key) {
+                    cols.extend(tcols.clone());
+                } else if let Some((_, short_name)) = key.split_once('.') {
+                    if let Some(tcols) = c.table_columns.get(short_name) {
+                        cols.extend(tcols.clone());
+                    }
+                }
+            }
+            if cols.is_empty() {
+                cols.extend(c.columns.clone());
+            } else {
+                cols.extend(c.columns.clone());
+            }
+        }
+        cols.sort();
+        cols.dedup();
+        cols
     }
 
     pub fn update_cache(
@@ -376,29 +462,61 @@ impl SqlCompleter {
             .unwrap_or(0);
 
         let word = &prefix[word_start..];
+        let table_refs = extract_table_refs(prefix);
 
-        // Case A: Dot-qualified object completion (e.g. "public.u", "schema.")
-        if let Some((schema, _obj_prefix)) = word.split_once('.') {
-            self.ensure_schema_loaded(schema);
+        // Case A: Dot-qualified completion (e.g. "u.col", "users.col", or "public.users")
+        if let Some((qualifier, _obj_prefix)) = word.split_once('.') {
+            // Check if qualifier matches a table alias or table name in FROM/JOIN/UPDATE
+            let matched_table = table_refs.iter().find_map(|(tbl, alias)| {
+                if alias.as_ref().is_some_and(|a| a.eq_ignore_ascii_case(qualifier)) {
+                    return Some(tbl.clone());
+                }
+                let short = tbl.split('.').next_back().unwrap_or(tbl);
+                if tbl.eq_ignore_ascii_case(qualifier) || short.eq_ignore_ascii_case(qualifier) {
+                    return Some(tbl.clone());
+                }
+                None
+            });
+
+            if let Some(tbl) = matched_table {
+                self.ensure_table_loaded(&tbl);
+                let mut candidates = Vec::new();
+                if let Ok(c) = self.cache.read() {
+                    let key = tbl.to_lowercase();
+                    let short_key = key.split('.').next_back().unwrap_or(&key);
+                    if let Some(cols) = c.table_columns.get(&key).or_else(|| c.table_columns.get(short_key)) {
+                        for col in cols {
+                            candidates.push(format!("{}.{}", qualifier, col));
+                        }
+                    }
+                }
+                candidates.sort();
+                candidates.dedup();
+                if !candidates.is_empty() {
+                    return (word_start, filter_candidates(&candidates, word, true));
+                }
+            }
+
+            self.ensure_schema_loaded(qualifier);
             let mut candidates = Vec::new();
             if let Ok(c) = self.cache.read() {
                 for t in &c.tables {
                     if let Some((s, name)) = t.split_once('.') {
-                        if s.eq_ignore_ascii_case(schema) {
+                        if s.eq_ignore_ascii_case(qualifier) {
                             candidates.push(format!("{}.{}", s, name));
                         }
                     }
                 }
                 for v in &c.views {
                     if let Some((s, name)) = v.split_once('.') {
-                        if s.eq_ignore_ascii_case(schema) {
+                        if s.eq_ignore_ascii_case(qualifier) {
                             candidates.push(format!("{}.{}", s, name));
                         }
                     }
                 }
                 for f in &c.functions {
                     if let Some((s, name)) = f.split_once('.') {
-                        if s.eq_ignore_ascii_case(schema) {
+                        if s.eq_ignore_ascii_case(qualifier) {
                             candidates.push(format!("{}.{}", s, name));
                         }
                     }
@@ -412,19 +530,16 @@ impl SqlCompleter {
         // Case B: Word is empty (user hit TAB after a space)
         if word.is_empty() {
             let before_space = prefix.trim_end();
-            let prev_keyword = before_space
-                .split_whitespace()
-                .last()
-                .unwrap_or("")
-                .to_uppercase();
-
-            let cache = self.cache.read().ok();
+            let mut words_rev = before_space.split_whitespace().rev();
+            let prev_keyword = words_rev.next().unwrap_or("").to_uppercase();
+            let prev_prev_keyword = words_rev.next().unwrap_or("").to_uppercase();
 
             match prev_keyword.as_str() {
                 "FROM" | "JOIN" | "INTO" | "UPDATE" | "TABLE" => {
                     let mut candidates = Vec::new();
-                    if let Some(ref c) = cache {
+                    if let Ok(c) = self.cache.read() {
                         candidates.extend(c.tables.clone());
+                        candidates.extend(c.views.clone());
                         candidates.extend(c.schemas.clone());
                     }
                     candidates.sort();
@@ -432,20 +547,21 @@ impl SqlCompleter {
                     return (prefix.len(), filter_candidates(&candidates, "", true));
                 }
                 "SELECT" => {
+                    self.ensure_tables_loaded(&table_refs);
                     let mut candidates = vec![
                         "*".to_string(),
                         "DISTINCT".to_string(),
                         "COUNT(*)".to_string(),
                     ];
-                    if let Some(ref c) = cache {
+                    candidates.extend(self.columns_for_tables(&table_refs));
+                    if let Ok(c) = self.cache.read() {
                         candidates.extend(c.functions.clone());
-                        candidates.extend(c.columns.clone());
                     }
                     return (prefix.len(), filter_candidates(&candidates, "", true));
                 }
                 "CALL" | "EXECUTE" => {
                     let mut candidates = Vec::new();
-                    if let Some(ref c) = cache {
+                    if let Ok(c) = self.cache.read() {
                         candidates.extend(c.functions.clone());
                         candidates.extend(c.schemas.clone());
                     }
@@ -453,11 +569,20 @@ impl SqlCompleter {
                     candidates.dedup();
                     return (prefix.len(), filter_candidates(&candidates, "", true));
                 }
-                "WHERE" | "AND" | "OR" | "ON" => {
+                "WHERE" | "AND" | "OR" | "ON" | "HAVING" => {
+                    self.ensure_tables_loaded(&table_refs);
                     let mut candidates = vec!["NOT".to_string(), "EXISTS".to_string()];
-                    if let Some(ref c) = cache {
-                        candidates.extend(c.columns.clone());
-                    }
+                    candidates.extend(self.columns_for_tables(&table_refs));
+                    return (prefix.len(), filter_candidates(&candidates, "", true));
+                }
+                "SET" => {
+                    self.ensure_tables_loaded(&table_refs);
+                    let candidates = self.columns_for_tables(&table_refs);
+                    return (prefix.len(), filter_candidates(&candidates, "", true));
+                }
+                "BY" if prev_prev_keyword == "ORDER" || prev_prev_keyword == "GROUP" => {
+                    self.ensure_tables_loaded(&table_refs);
+                    let candidates = self.columns_for_tables(&table_refs);
                     return (prefix.len(), filter_candidates(&candidates, "", true));
                 }
                 "ORDER" | "GROUP" => {
@@ -500,6 +625,9 @@ impl SqlCompleter {
         }
 
         // Case C: Normal word completion (user is typing a prefix like "sel", "pub", "use")
+        if !table_refs.is_empty() {
+            self.ensure_tables_loaded(&table_refs);
+        }
         let word_upper = word.to_uppercase();
         let word_lower = word.to_lowercase();
         let mut matches = Vec::new();
@@ -557,7 +685,7 @@ impl SqlCompleter {
                     });
                 }
             }
-            for col in &c.columns {
+            for col in self.columns_for_tables(&table_refs) {
                 if col.to_lowercase().starts_with(&word_lower) {
                     matches.push(Pair {
                         display: col.clone(),
@@ -572,6 +700,47 @@ impl SqlCompleter {
 
         (word_start, matches)
     }
+}
+
+fn extract_table_refs(sql: &str) -> Vec<(String, Option<String>)> {
+    const CLAUSE_KEYWORDS: &[&str] = &[
+        "WHERE", "ON", "JOIN", "LEFT", "RIGHT", "INNER", "OUTER", "FULL", "CROSS", "NATURAL",
+        "GROUP", "ORDER", "HAVING", "LIMIT", "OFFSET", "UNION", "INTERSECT", "EXCEPT", "SET",
+        "VALUES", "RETURNING", "USING", "AS", "INTO", "FROM", "SELECT",
+    ];
+
+    let tokens: Vec<&str> = sql
+        .split(|c: char| c.is_whitespace() || c == ',' || c == '(' || c == ')' || c == ';')
+        .filter(|t| !t.is_empty())
+        .collect();
+
+    let mut refs = Vec::new();
+    let mut i = 0;
+    while i < tokens.len() {
+        let upper = tokens[i].to_uppercase();
+        if matches!(upper.as_str(), "FROM" | "JOIN" | "UPDATE" | "INTO") {
+            if i + 1 < tokens.len() {
+                let tbl = tokens[i + 1].trim_matches('"');
+                if !tbl.is_empty() && !CLAUSE_KEYWORDS.contains(&tbl.to_uppercase().as_str()) {
+                    let mut alias = None;
+                    if i + 2 < tokens.len() {
+                        let next_upper = tokens[i + 2].to_uppercase();
+                        if next_upper == "AS" && i + 3 < tokens.len() {
+                            let a = tokens[i + 3].trim_matches('"');
+                            if !CLAUSE_KEYWORDS.contains(&a.to_uppercase().as_str()) {
+                                alias = Some(a.to_string());
+                            }
+                        } else if !CLAUSE_KEYWORDS.contains(&next_upper.as_str()) {
+                            alias = Some(tokens[i + 2].trim_matches('"').to_string());
+                        }
+                    }
+                    refs.push((tbl.to_string(), alias));
+                }
+            }
+        }
+        i += 1;
+    }
+    refs
 }
 
 fn filter_candidates(list: &[String], prefix: &str, append_space: bool) -> Vec<Pair> {
