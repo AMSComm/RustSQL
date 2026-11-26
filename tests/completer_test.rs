@@ -136,3 +136,52 @@ fn test_contextual_sql_completion() {
     assert_eq!(start, 26);
     assert_eq!(matches[0].replacement, "BY ");
 }
+
+#[test]
+fn test_function_and_procedure_completion() {
+    let completer = SqlCompleter::new();
+    completer.update_cache(
+        vec!["users".to_string(), "public.users".to_string()],
+        vec!["public".to_string(), "analytics".to_string()],
+        vec![],
+        vec![],
+        vec![],
+    );
+    completer.set_functions(vec![
+        "calc_total".to_string(),
+        "public.calc_total".to_string(),
+        "sp_refresh".to_string(),
+        "public.sp_refresh".to_string(),
+    ]);
+
+    // SQL prefix completion
+    let (start, matches) = completer.complete_input("SELECT calc_", 12);
+    assert_eq!(start, 7);
+    assert!(matches.iter().any(|m| m.display == "calc_total"));
+
+    // CALL procedure completion
+    let (start, matches) = completer.complete_input("CALL ", 5);
+    assert_eq!(start, 5);
+    assert!(matches.iter().any(|m| m.display == "sp_refresh"));
+
+    // Dot-qualified function completion
+    let (start, matches) = completer.complete_input("SELECT public.calc", 18);
+    assert_eq!(start, 7);
+    assert!(matches.iter().any(|m| m.display == "public.calc_total"));
+
+    // Meta-command \df / \sf completion
+    let (start, matches) = completer.complete_input("\\sf sp_", 7);
+    assert_eq!(start, 4);
+    assert!(matches.iter().any(|m| m.display == "sp_refresh"));
+
+    // Lazy schema merge
+    completer.merge_schema_objects(
+        "analytics",
+        vec!["analytics.events".to_string()],
+        vec![],
+        vec!["analytics.agg_events".to_string()],
+    );
+    let (_, matches) = completer.complete_input("SELECT * FROM analytics.", 24);
+    assert!(matches.iter().any(|m| m.display == "analytics.events"));
+    assert!(matches.iter().any(|m| m.display == "analytics.agg_events"));
+}

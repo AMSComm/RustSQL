@@ -1,19 +1,31 @@
 use rustyline::completion::{Completer, Pair};
 use rustyline::Context;
-use std::sync::{Arc, RwLock};
+use std::collections::HashSet;
+use std::sync::{Arc, Condvar, Mutex, RwLock};
+use std::time::{Duration, Instant};
 
 #[derive(Clone, Default, Debug)]
 pub struct CompletionCache {
     pub tables: Vec<String>,
     pub schemas: Vec<String>,
     pub views: Vec<String>,
+    pub functions: Vec<String>,
     pub databases: Vec<String>,
     pub columns: Vec<String>,
+    pub loaded_schemas: HashSet<String>,
+    pub catalog_access_denied: bool,
+}
+
+#[derive(Clone)]
+pub struct SchemaLoader {
+    pub tx: tokio::sync::mpsc::UnboundedSender<String>,
+    pub notify: Arc<(Mutex<()>, Condvar)>,
 }
 
 #[derive(Clone, Default)]
 pub struct SqlCompleter {
     pub cache: Arc<RwLock<CompletionCache>>,
+    pub loader: Option<SchemaLoader>,
 }
 
 pub const SQL_KEYWORDS: &[&str] = &[
@@ -101,6 +113,108 @@ impl SqlCompleter {
     pub fn new() -> Self {
         Self {
             cache: Arc::new(RwLock::new(CompletionCache::default())),
+            loader: None,
+        }
+    }
+
+    pub fn with_loader(loader: SchemaLoader) -> Self {
+        Self {
+            cache: Arc::new(RwLock::new(CompletionCache::default())),
+            loader: Some(loader),
+        }
+    }
+
+    pub fn reset_cache(&self) {
+        if let Ok(mut c) = self.cache.write() {
+            *c = CompletionCache::default();
+        }
+    }
+
+    pub fn mark_catalog_access_denied(&self) {
+        if let Ok(mut c) = self.cache.write() {
+            c.catalog_access_denied = true;
+        }
+    }
+
+    pub fn set_functions(&self, functions: Vec<String>) {
+        if let Ok(mut c) = self.cache.write() {
+            c.functions = functions;
+            c.functions.sort();
+            c.functions.dedup();
+        }
+    }
+
+    pub fn merge_schema_objects(
+        &self,
+        schema: &str,
+        tables: Vec<String>,
+        views: Vec<String>,
+        functions: Vec<String>,
+    ) {
+        if let Ok(mut c) = self.cache.write() {
+            c.tables.extend(tables);
+            c.tables.sort();
+            c.tables.dedup();
+
+            c.views.extend(views);
+            c.views.sort();
+            c.views.dedup();
+
+            c.functions.extend(functions);
+            c.functions.sort();
+            c.functions.dedup();
+
+            c.loaded_schemas.insert(schema.to_lowercase());
+        }
+    }
+
+    pub fn mark_schema_loaded(&self, schema: &str) {
+        if let Ok(mut c) = self.cache.write() {
+            c.loaded_schemas.insert(schema.to_lowercase());
+        }
+    }
+
+    fn ensure_schema_loaded(&self, schema: &str) {
+        let schema_lower = schema.trim().to_lowercase();
+        if schema_lower.is_empty() {
+            return;
+        }
+
+        let should_load = self
+            .cache
+            .read()
+            .map(|c| !c.catalog_access_denied && !c.loaded_schemas.contains(&schema_lower))
+            .unwrap_or(false);
+
+        if !should_load {
+            return;
+        }
+
+        if let Some(ref loader) = self.loader {
+            let _ = loader.tx.send(schema.to_string());
+            let (lock, cvar) = &*loader.notify;
+            if let Ok(mut guard) = lock.lock() {
+                let deadline = Instant::now() + Duration::from_millis(250);
+                loop {
+                    let done = self
+                        .cache
+                        .read()
+                        .map(|c| c.catalog_access_denied || c.loaded_schemas.contains(&schema_lower))
+                        .unwrap_or(true);
+                    if done {
+                        break;
+                    }
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    if remaining.is_zero() {
+                        break;
+                    }
+                    let (new_guard, wait_res) = cvar.wait_timeout(guard, remaining).unwrap();
+                    guard = new_guard;
+                    if wait_res.timed_out() {
+                        break;
+                    }
+                }
+            }
         }
     }
 
@@ -195,8 +309,12 @@ impl SqlCompleter {
                     (arg_start, filter_candidates(&candidates, arg_trimmed, true))
                 }
                 "\\df" | "\\df+" | "\\sf" | "\\sf+" => {
+                    if let Some((schema, _)) = arg_trimmed.split_once('.') {
+                        self.ensure_schema_loaded(schema);
+                    }
                     let mut candidates = Vec::new();
                     if let Ok(c) = self.cache.read() {
+                        candidates.extend(c.functions.clone());
                         candidates.extend(c.schemas.clone());
                     }
                     candidates.sort();
@@ -261,6 +379,7 @@ impl SqlCompleter {
 
         // Case A: Dot-qualified object completion (e.g. "public.u", "schema.")
         if let Some((schema, _obj_prefix)) = word.split_once('.') {
+            self.ensure_schema_loaded(schema);
             let mut candidates = Vec::new();
             if let Ok(c) = self.cache.read() {
                 for t in &c.tables {
@@ -272,6 +391,13 @@ impl SqlCompleter {
                 }
                 for v in &c.views {
                     if let Some((s, name)) = v.split_once('.') {
+                        if s.eq_ignore_ascii_case(schema) {
+                            candidates.push(format!("{}.{}", s, name));
+                        }
+                    }
+                }
+                for f in &c.functions {
+                    if let Some((s, name)) = f.split_once('.') {
                         if s.eq_ignore_ascii_case(schema) {
                             candidates.push(format!("{}.{}", s, name));
                         }
@@ -312,8 +438,19 @@ impl SqlCompleter {
                         "COUNT(*)".to_string(),
                     ];
                     if let Some(ref c) = cache {
+                        candidates.extend(c.functions.clone());
                         candidates.extend(c.columns.clone());
                     }
+                    return (prefix.len(), filter_candidates(&candidates, "", true));
+                }
+                "CALL" | "EXECUTE" => {
+                    let mut candidates = Vec::new();
+                    if let Some(ref c) = cache {
+                        candidates.extend(c.functions.clone());
+                        candidates.extend(c.schemas.clone());
+                    }
+                    candidates.sort();
+                    candidates.dedup();
                     return (prefix.len(), filter_candidates(&candidates, "", true));
                 }
                 "WHERE" | "AND" | "OR" | "ON" => {
@@ -398,6 +535,17 @@ impl SqlCompleter {
                     matches.push(Pair {
                         display: view.clone(),
                         replacement: format!("{} ", view),
+                    });
+                }
+            }
+            for func in &c.functions {
+                let name_only = func.split('.').next_back().unwrap_or(func);
+                if name_only.to_lowercase().starts_with(&word_lower)
+                    || func.to_lowercase().starts_with(&word_lower)
+                {
+                    matches.push(Pair {
+                        display: func.clone(),
+                        replacement: format!("{} ", func),
                     });
                 }
             }

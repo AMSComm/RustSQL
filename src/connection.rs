@@ -3,6 +3,7 @@ use crate::dialect::{create_dialect, Dialect, EngineDialect};
 use crate::error::{format_notice, Result, RsqlError};
 use native_tls::TlsConnector;
 use postgres_native_tls::MakeTlsConnector;
+use std::sync::Arc;
 use std::task::Poll;
 use tokio_postgres::{Client, NoTls};
 
@@ -64,8 +65,8 @@ where
 }
 
 pub struct DbConnection {
-    pub client: Client,
-    pub dialect: Box<dyn Dialect>,
+    pub client: Arc<Client>,
+    pub dialect: Arc<dyn Dialect>,
     #[allow(dead_code)]
     pub engine: EngineDialect,
     pub config: ConnectionConfig,
@@ -458,9 +459,9 @@ impl DbConnection {
         let dialect = create_dialect(&engine);
         let is_superuser = check_superuser(&client).await.unwrap_or(false);
 
-        Ok(DbConnection {
-            client,
-            dialect,
+                Ok(DbConnection {
+            client: Arc::new(client),
+            dialect: Arc::from(dialect),
             engine,
             config,
             server_version: version_str,

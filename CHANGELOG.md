@@ -5,6 +5,17 @@ All notable changes to **RustSQL (`ruql`)** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.0.5] - 2026-11-26
+
+### ⚡ Performance & Autocomplete Improvements
+
+- **Default-Schema-Only Preload**: On connect, `ruql` now fetches tables, views, and functions only for `current_schema()` instead of scanning all schemas and `pg_attribute`.
+- **Lazy On-Demand Schema Loading**: Typing `<schema>.` and pressing `Tab` dynamically loads objects for that schema in the background (with a 250ms fast-path wait) and caches them for subsequent completions.
+- **Silent Permission-Denied Handling**: When catalog access is restricted (`42501` / permission denied), `ruql` stops further catalog preload queries immediately without printing warnings.
+- **Function & Procedure Autocomplete**: Added function and stored procedure completion for SQL (`SELECT`, `CALL`, `EXECUTE`, `<schema>.<name>`) and meta-commands (`\df`, `\df+`, `\sf`, `\sf+`).
+
+---
+
 ## [v0.0.4] - 2026-11-26
 
 ### 🐛 Fixes & Improvements
