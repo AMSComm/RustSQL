@@ -14,7 +14,10 @@ use rustyline::error::ReadlineError;
 use rustyline::highlight::{CmdKind, Highlighter};
 use rustyline::hint::Hinter;
 use rustyline::validate::Validator;
-use rustyline::{CompletionType, Config, Context, EditMode, Editor, Helper};
+use rustyline::{
+    Cmd, CompletionType, Config, Context, EditMode, Editor, Helper, KeyCode, KeyEvent, Modifiers,
+    Movement,
+};
 use std::borrow::Cow;
 
 #[derive(Clone)]
@@ -54,6 +57,31 @@ impl Hinter for RsqlHelper {
     type Hint = String;
 }
 
+/// Configures psql-style history navigation and multiline cursor movement.
+fn configure_keybindings(rl: &mut Editor<RsqlHelper, rustyline::history::DefaultHistory>) {
+    // Match psql: Up/Down always navigate history even in multiline buffers.
+    rl.bind_sequence(KeyEvent(KeyCode::Up, Modifiers::NONE), Cmd::PreviousHistory);
+    rl.bind_sequence(KeyEvent(KeyCode::Down, Modifiers::NONE), Cmd::NextHistory);
+
+    // Move cursor up/down within multiline queries using Alt+Up/Down or Ctrl+Up/Down.
+    rl.bind_sequence(
+        KeyEvent(KeyCode::Up, Modifiers::ALT),
+        Cmd::Move(Movement::LineUp(1)),
+    );
+    rl.bind_sequence(
+        KeyEvent(KeyCode::Down, Modifiers::ALT),
+        Cmd::Move(Movement::LineDown(1)),
+    );
+    rl.bind_sequence(
+        KeyEvent(KeyCode::Up, Modifiers::CTRL),
+        Cmd::Move(Movement::LineUp(1)),
+    );
+    rl.bind_sequence(
+        KeyEvent(KeyCode::Down, Modifiers::CTRL),
+        Cmd::Move(Movement::LineDown(1)),
+    );
+}
+
 pub async fn run_interactive_repl(
     mut conn: DbConnection,
     mut state: AppState,
@@ -76,6 +104,7 @@ pub async fn run_interactive_repl(
     let mut rl = Editor::with_config(config)
         .map_err(|e| crate::error::RsqlError::Other(e.to_string()))?;
     rl.set_helper(Some(helper));
+    configure_keybindings(&mut rl);
 
     if let Some(ref path) = history_path {
         if path.exists() {

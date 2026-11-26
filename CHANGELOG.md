@@ -5,6 +5,15 @@ All notable changes to **RustSQL (`ruql`)** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.0.4] - 2026-11-26
+
+### 🐛 Fixes & Improvements
+
+- **psql-Style History Navigation (`Up` / `Down`)**: Pressing `Up` or `Down` arrows now always navigates to the previous/next query in history, even when the current buffer contains a multiline query.
+- **Multiline Cursor Movement**: Added `Alt+Up` / `Alt+Down` (Option+Up/Down on macOS) and `Ctrl+Up` / `Ctrl+Down` keybindings to move the cursor up and down across lines within multiline queries.
+
+---
+
 ## [v0.0.3] - 2026-11-25
 
 ### 🚀 Highlights
