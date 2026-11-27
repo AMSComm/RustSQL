@@ -230,6 +230,28 @@ pub async fn execute_meta_command(
     conn: &mut DbConnection,
     state: &mut AppState,
 ) -> Result<bool> {
+    // Auto-reconnect before DB-backed meta-commands if idle connection dropped
+    let needs_db = !matches!(
+        meta,
+        MetaCommand::Quit
+            | MetaCommand::HelpGeneral
+            | MetaCommand::HelpSql(_)
+            | MetaCommand::Connect(..)
+            | MetaCommand::ConnInfo
+            | MetaCommand::ToggleExpanded(_)
+            | MetaCommand::ToggleTiming(_)
+            | MetaCommand::ToggleTuplesOnly(_)
+            | MetaCommand::Pset(..)
+            | MetaCommand::Set(..)
+            | MetaCommand::Echo(_)
+            | MetaCommand::ChangeDirectory(_)
+            | MetaCommand::Shell(_)
+            | MetaCommand::Out(_)
+    );
+    if needs_db && conn.is_closed() {
+        let _ = conn.reconnect().await;
+    }
+
     // Returns Ok(true) if REPL should continue, Ok(false) if quit
     match meta {
         MetaCommand::Quit => return Ok(false),

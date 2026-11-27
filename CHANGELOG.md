@@ -5,6 +5,16 @@ All notable changes to **RustSQL (`ruql`)** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.0.7] - 2026-11-27
+
+### 🛡️ Connection Stability & Smart Auto-Reconnect
+
+- **Detailed DB Error Formatting**: Replaced generic `"Connection warning: db error"` with full PostgreSQL/Redshift `DbError` severity, message, and SQLSTATE formatting; expected idle closes are logged to `~/.ruql/error.log` without interrupting the prompt.
+- **Session-Aware Keepalive**: Automatically enables lightweight protocol keepalive (`simple_query("")` every 45s) only while a session holds temp tables (`CREATE TEMP TABLE`, `INTO TEMP`) or an open transaction (`BEGIN`/`START TRANSACTION`), allowing clean idle disconnects otherwise.
+- **Smart Read-Only Auto-Retry & Meta Auto-Reconnect**: Automatically reconnects before meta-commands (`\dt`, `\df`, etc.) if closed, and retries read-only queries (`SELECT`, `WITH`, `SHOW`, `EXPLAIN`) once on transport disconnects without retrying writes or server-killed queries.
+
+---
+
 ## [v0.0.6] - 2026-11-26
 
 ### ⚡ Autocomplete Improvements

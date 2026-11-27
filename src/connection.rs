@@ -56,12 +56,34 @@ where
         .await;
 
         if let Err(e) = res {
-            let err_str = e.to_string();
-            if !err_str.contains("closed") && !err_str.contains("broken pipe") {
-                eprintln!("Connection warning: {}", e);
+            let detail = format_tokio_pg_error(&e);
+            let lower = detail.to_lowercase();
+            let is_expected_close = lower.contains("closed")
+                || lower.contains("broken pipe")
+                || lower.contains("connection reset")
+                || lower.contains("eof")
+                || lower.contains("idle-session timeout")
+                || lower.contains("idle_session_timeout");
+            if is_expected_close {
+                crate::logger::log_error("Background connection closed", &detail);
+            } else {
+                crate::logger::log_error("Background connection warning", &detail);
+                eprintln!("Connection warning: {}", detail);
             }
         }
     });
+}
+
+pub fn format_tokio_pg_error(err: &tokio_postgres::Error) -> String {
+    if let Some(db_err) = err.as_db_error() {
+        let mut msg = format!("{}: {} ({})", db_err.severity(), db_err.message(), db_err.code().code());
+        if let Some(detail) = db_err.detail() {
+            msg.push_str(&format!(" — {}", detail));
+        }
+        msg
+    } else {
+        format_error_chain(err)
+    }
 }
 
 pub struct DbConnection {

@@ -1,6 +1,6 @@
 [package]
 name = "rustsql"
-version = "0.0.6"
+version = "0.0.7"
 edition = "2021"
 authors = ["Huy <dev@amsoftware.com.vn>"]
 description = "RustSQL (ruql) - Next-Generation PostgreSQL and Amazon Redshift CLI"

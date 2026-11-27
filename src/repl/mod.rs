@@ -20,6 +20,7 @@ use rustyline::{
     Movement,
 };
 use std::borrow::Cow;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
 #[derive(Clone)]
@@ -99,6 +100,40 @@ pub async fn run_interactive_repl(
 
     let (conn_watch_tx, conn_watch_rx) =
         tokio::sync::watch::channel((Arc::clone(&conn.client), Arc::clone(&conn.dialect)));
+
+    let is_query_running = Arc::new(AtomicBool::new(false));
+    let keepalive_needed = Arc::new(AtomicBool::new(false));
+    let mut session_tracker = SessionTracker::default();
+
+    // Application-level keepalive heartbeat: only active while session holds ephemeral state
+    // (temp tables or open transactions); otherwise allow idle disconnect and auto-reconnect.
+    let hb_interval_secs = std::env::var("PGKEEPALIVE_QUERY_INTERVAL")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(45);
+    if hb_interval_secs > 0 {
+        let hb_watch_rx = conn_watch_rx.clone();
+        let hb_running = Arc::clone(&is_query_running);
+        let hb_needed = Arc::clone(&keepalive_needed);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(hb_interval_secs));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            interval.tick().await; // skip immediate first tick
+            loop {
+                interval.tick().await;
+                if hb_running.load(Ordering::Relaxed) || !hb_needed.load(Ordering::Relaxed) {
+                    continue;
+                }
+                let client = {
+                    let guard = hb_watch_rx.borrow();
+                    Arc::clone(&guard.0)
+                };
+                if !client.is_closed() {
+                    let _ = client.simple_query("").await;
+                }
+            }
+        });
+    }
 
     // Background lazy loader for non-default schemas and table columns
     let bg_completer = completer.clone();
@@ -239,6 +274,8 @@ pub async fn run_interactive_repl(
                         match execute_meta_command(meta, &mut conn, &mut state).await {
                             Ok(true) => {
                                 if is_connect {
+                                    session_tracker.on_reconnect();
+                                    keepalive_needed.store(false, Ordering::Relaxed);
                                     let _ = conn_watch_tx.send((
                                         Arc::clone(&conn.client),
                                         Arc::clone(&conn.dialect),
@@ -282,7 +319,28 @@ pub async fn run_interactive_repl(
                     query_buffer.clear();
                     state.last_query = full_query.clone();
 
-                    execute_query_with_cancel(&mut conn, &full_query, &state).await;
+                    is_query_running.store(true, Ordering::Relaxed);
+                    let outcome = execute_query_with_session(
+                        &mut conn,
+                        &full_query,
+                        &state,
+                        session_tracker.needs_keepalive(),
+                    )
+                    .await;
+                    is_query_running.store(false, Ordering::Relaxed);
+
+                    if outcome.reconnected {
+                        session_tracker.on_reconnect();
+                    }
+                    if outcome.succeeded {
+                        session_tracker.on_query(&full_query);
+                    }
+                    keepalive_needed.store(session_tracker.needs_keepalive(), Ordering::Relaxed);
+
+                    let _ = conn_watch_tx.send((
+                        Arc::clone(&conn.client),
+                        Arc::clone(&conn.dialect),
+                    ));
                 }
             }
             Err(ReadlineError::Interrupted) => {
@@ -313,84 +371,283 @@ pub async fn run_interactive_repl(
     Ok(())
 }
 
+#[derive(Default, Debug, Clone)]
+pub struct SessionTracker {
+    pub has_temp_table: bool,
+    pub in_transaction: bool,
+}
+
+impl SessionTracker {
+    pub fn needs_keepalive(&self) -> bool {
+        self.has_temp_table || self.in_transaction
+    }
+
+    pub fn on_reconnect(&mut self) {
+        self.has_temp_table = false;
+        self.in_transaction = false;
+    }
+
+    pub fn on_query(&mut self, query: &str) {
+        let upper = query.to_uppercase();
+        if upper.contains("CREATE TEMP ")
+            || upper.contains("CREATE TEMPORARY ")
+            || upper.contains("INTO TEMP ")
+            || upper.contains("INTO TEMPORARY ")
+        {
+            self.has_temp_table = true;
+        }
+
+        // Check transaction boundaries across statements in the batch
+        for stmt in upper.split(';') {
+            let trimmed = strip_leading_comments(stmt).trim_start();
+            if trimmed.starts_with("BEGIN") || trimmed.starts_with("START TRANSACTION") {
+                self.in_transaction = true;
+            } else if trimmed.starts_with("COMMIT")
+                || trimmed.starts_with("ROLLBACK")
+                || trimmed.starts_with("END")
+            {
+                self.in_transaction = false;
+            }
+        }
+    }
+}
+
+fn strip_leading_comments(mut s: &str) -> &str {
+    loop {
+        s = s.trim_start();
+        if let Some(rest) = s.strip_prefix("--") {
+            match rest.find('\n') {
+                Some(idx) => s = &rest[idx + 1..],
+                None => return "",
+            }
+        } else if let Some(rest) = s.strip_prefix("/*") {
+            match rest.find("*/") {
+                Some(idx) => s = &rest[idx + 2..],
+                None => return "",
+            }
+        } else {
+            return s;
+        }
+    }
+}
+
+pub fn is_read_only_query(query: &str) -> bool {
+    let cleaned = strip_leading_comments(query).trim_start();
+    let first_word = cleaned
+        .split(|c: char| c.is_whitespace() || c == '(' || c == ';')
+        .next()
+        .unwrap_or("")
+        .to_uppercase();
+
+    match first_word.as_str() {
+        "SELECT" | "SHOW" | "VALUES" => true,
+        "WITH" => {
+            let upper = cleaned.to_uppercase();
+            !upper.contains("INSERT ") && !upper.contains("UPDATE ") && !upper.contains("DELETE ")
+        }
+        "EXPLAIN" => {
+            let upper = cleaned.to_uppercase();
+            !upper.contains("INSERT ") && !upper.contains("UPDATE ") && !upper.contains("DELETE ")
+        }
+        _ => false,
+    }
+}
+
+pub fn is_transport_disconnect_error(err_msg: &str) -> bool {
+    let lower = err_msg.to_lowercase();
+    // Never treat server-side query kills / statement timeouts as transport disconnects
+    if lower.contains("canceling statement")
+        || lower.contains("57014")
+        || lower.contains("statement timeout")
+        || lower.contains("administrator command")
+        || lower.contains("out of memory")
+    {
+        return false;
+    }
+    lower.contains("connection closed")
+        || lower.contains("broken pipe")
+        || lower.contains("connection reset")
+        || lower.contains("unexpected eof")
+        || lower.contains("closed")
+}
+
+struct QueryOutcome {
+    succeeded: bool,
+    reconnected: bool,
+}
+
 pub async fn execute_query_with_cancel(
     conn: &mut DbConnection,
     query: &str,
     state: &AppState,
 ) {
-    if conn.is_closed() {
-        eprintln!("{}", "The connection to the server was lost. Attempting reset: ...".yellow());
-        match conn.reconnect().await {
-            Ok(()) => {
-                eprintln!("{}", "Reset: Succeeded.".green().bold());
-            }
-            Err(e) => {
-                eprintln!("{}", format!("Reset: Failed: {}", e).red().bold());
-                crate::logger::log_error("Connection reset failed", &e);
-                return;
-            }
-        }
-    }
+    let _ = execute_query_with_session(conn, query, state, false).await;
+}
 
+async fn run_cancellable_query(
+    conn: &DbConnection,
+    query: &str,
+    state: &AppState,
+) -> Option<std::result::Result<(), crate::error::RsqlError>> {
     let cancel_token = conn.client.cancel_token();
     let is_ssl = conn.is_ssl;
     let ssl_mode = conn.config.ssl_mode;
     let mut cancel_sent = false;
 
-    let query_res = {
-        let mut query_fut = std::pin::pin!(crate::output::execute_and_display_query(&conn.client, query, state, true));
-        let mut res = None;
+    let mut query_fut = std::pin::pin!(crate::output::execute_and_display_query(
+        &conn.client,
+        query,
+        state,
+        true
+    ));
+    let mut res = None;
 
-        while res.is_none() {
-            tokio::select! {
-                r = &mut query_fut => {
-                    res = Some(r);
-                }
-                _ = tokio::signal::ctrl_c(), if !cancel_sent => {
-                    cancel_sent = true;
-                    eprintln!("{}", "Cancel request sent".yellow());
-                    let cancel_token_clone = cancel_token.clone();
-                    tokio::spawn(async move {
-                        if is_ssl {
-                            if let Ok(connector) = crate::connection::create_tls_connector(ssl_mode) {
-                                let _ = cancel_token_clone.cancel_query(connector).await;
-                            } else {
-                                let _ = cancel_token_clone.cancel_query(tokio_postgres::NoTls).await;
-                            }
+    while res.is_none() {
+        tokio::select! {
+            r = &mut query_fut => {
+                res = Some(r);
+            }
+            _ = tokio::signal::ctrl_c(), if !cancel_sent => {
+                cancel_sent = true;
+                eprintln!("{}", "Cancel request sent".yellow());
+                let cancel_token_clone = cancel_token.clone();
+                tokio::spawn(async move {
+                    if is_ssl {
+                        if let Ok(connector) = crate::connection::create_tls_connector(ssl_mode) {
+                            let _ = cancel_token_clone.cancel_query(connector).await;
                         } else {
                             let _ = cancel_token_clone.cancel_query(tokio_postgres::NoTls).await;
                         }
-                    });
-                }
-                _ = tokio::signal::ctrl_c(), if cancel_sent => {
-                    eprintln!("{}", "^C (forced abort)".red());
-                    break;
-                }
+                    } else {
+                        let _ = cancel_token_clone.cancel_query(tokio_postgres::NoTls).await;
+                    }
+                });
+            }
+            _ = tokio::signal::ctrl_c(), if cancel_sent => {
+                eprintln!("{}", "^C (forced abort)".red());
+                break;
             }
         }
-        res
-    };
+    }
+    res
+}
 
-    if let Some(Err(e)) = query_res {
-        let err_msg = format!("{}", e);
-        if err_msg.contains("canceling statement due to user request")
-            || err_msg.contains("57014")
-            || err_msg.contains("query was canceled")
-        {
-            eprintln!("{}", "Query canceled (Ctrl+C)".yellow().bold());
-        } else {
-            eprintln!("{}", format!("ERROR: {}", e).red().bold());
-            crate::logger::log_error("Query execution error", &format!("{}\nSQL: {}", e, query));
+async fn execute_query_with_session(
+    conn: &mut DbConnection,
+    query: &str,
+    state: &AppState,
+    had_ephemeral_state: bool,
+) -> QueryOutcome {
+    let mut reconnected = false;
 
-            if conn.is_closed() {
+    if conn.is_closed() {
+        eprintln!("{}", "The connection to the server was lost. Attempting reset: ...".yellow());
+        match conn.reconnect().await {
+            Ok(()) => {
+                reconnected = true;
+                eprintln!("{}", "Reset: Succeeded.".green().bold());
+                if had_ephemeral_state {
+                    eprintln!(
+                        "{}",
+                        "Note: Previous session state (temp tables / transaction) was lost on disconnect."
+                            .yellow()
+                    );
+                }
+            }
+            Err(e) => {
+                eprintln!("{}", format!("Reset: Failed: {}", e).red().bold());
+                crate::logger::log_error("Connection reset failed", &e);
+                return QueryOutcome {
+                    succeeded: false,
+                    reconnected: false,
+                };
+            }
+        }
+    }
+
+    let query_res = run_cancellable_query(conn, query, state).await;
+
+    match query_res {
+        Some(Ok(())) => QueryOutcome {
+            succeeded: true,
+            reconnected,
+        },
+        None => QueryOutcome {
+            succeeded: false,
+            reconnected,
+        },
+        Some(Err(e)) => {
+            let err_msg = format!("{}", e);
+            if err_msg.contains("canceling statement due to user request")
+                || err_msg.contains("57014")
+                || err_msg.contains("query was canceled")
+            {
+                eprintln!("{}", "Query canceled (Ctrl+C)".yellow().bold());
+                return QueryOutcome {
+                    succeeded: false,
+                    reconnected,
+                };
+            }
+
+            let lost_conn = conn.is_closed() || is_transport_disconnect_error(&err_msg);
+            if lost_conn {
                 eprintln!("{}", "The connection to the server was lost. Attempting reset: ...".yellow());
                 match conn.reconnect().await {
-                    Ok(()) => eprintln!("{}", "Reset: Succeeded.".green().bold()),
+                    Ok(()) => {
+                        reconnected = true;
+                        let can_auto_retry = !had_ephemeral_state && is_read_only_query(query);
+                        if can_auto_retry {
+                            eprintln!(
+                                "{}",
+                                "Reset: Succeeded. Retrying read-only query...".green().bold()
+                            );
+                            return match run_cancellable_query(conn, query, state).await {
+                                Some(Ok(())) => QueryOutcome {
+                                    succeeded: true,
+                                    reconnected: true,
+                                },
+                                Some(Err(retry_err)) => {
+                                    eprintln!("{}", format!("ERROR: {}", retry_err).red().bold());
+                                    crate::logger::log_error(
+                                        "Query execution error (after retry)",
+                                        &format!("{}\nSQL: {}", retry_err, query),
+                                    );
+                                    QueryOutcome {
+                                        succeeded: false,
+                                        reconnected: true,
+                                    }
+                                }
+                                None => QueryOutcome {
+                                    succeeded: false,
+                                    reconnected: true,
+                                },
+                            };
+                        } else {
+                            eprintln!("{}", format!("ERROR: {}", e).red().bold());
+                            eprintln!("{}", "Reset: Succeeded.".green().bold());
+                            if had_ephemeral_state {
+                                eprintln!(
+                                    "{}",
+                                    "Note: Previous session state (temp tables / transaction) was lost; please re-run your statements."
+                                        .yellow()
+                                );
+                            }
+                        }
+                    }
                     Err(re_err) => {
+                        eprintln!("{}", format!("ERROR: {}", e).red().bold());
                         eprintln!("{}", format!("Reset: Failed: {}", re_err).red().bold());
                         crate::logger::log_error("Connection reset failed", &re_err);
                     }
                 }
+            } else {
+                eprintln!("{}", format!("ERROR: {}", e).red().bold());
+                crate::logger::log_error("Query execution error", &format!("{}\nSQL: {}", e, query));
+            }
+
+            QueryOutcome {
+                succeeded: false,
+                reconnected,
             }
         }
     }
@@ -574,4 +831,58 @@ pub async fn preload_cache(conn: &DbConnection, completer: &SqlCompleter) {
     completer.update_cache(tables, schemas, views, databases, Vec::new());
     completer.set_functions(functions);
     completer.mark_schema_loaded(&default_schema);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_session_tracker_temp_and_tx() {
+        let mut tracker = SessionTracker::default();
+        assert!(!tracker.needs_keepalive());
+
+        tracker.on_query("SELECT * FROM users;");
+        assert!(!tracker.needs_keepalive());
+
+        tracker.on_query("BEGIN;");
+        assert!(tracker.needs_keepalive());
+
+        tracker.on_query("COMMIT;");
+        assert!(!tracker.needs_keepalive());
+
+        tracker.on_query("CREATE TEMP TABLE tmp_ids (id int);");
+        assert!(tracker.needs_keepalive());
+
+        tracker.on_reconnect();
+        assert!(!tracker.needs_keepalive());
+    }
+
+    #[test]
+    fn test_is_read_only_query() {
+        assert!(is_read_only_query("SELECT * FROM users;"));
+        assert!(is_read_only_query("-- comment\nWITH cte AS (SELECT 1) SELECT * FROM cte;"));
+        assert!(is_read_only_query("SHOW search_path;"));
+        assert!(is_read_only_query("EXPLAIN SELECT 1;"));
+
+        assert!(!is_read_only_query("INSERT INTO users VALUES (1);"));
+        assert!(!is_read_only_query("UPDATE users SET name = 'a';"));
+        assert!(!is_read_only_query("DELETE FROM users;"));
+        assert!(!is_read_only_query("CREATE TEMP TABLE t (id int);"));
+        assert!(!is_read_only_query("WITH d AS (DELETE FROM t) SELECT 1;"));
+    }
+
+    #[test]
+    fn test_is_transport_disconnect_error() {
+        assert!(is_transport_disconnect_error("connection closed"));
+        assert!(is_transport_disconnect_error("Broken pipe"));
+        assert!(is_transport_disconnect_error("Connection reset by peer"));
+
+        assert!(!is_transport_disconnect_error(
+            "ERROR: canceling statement due to statement timeout (57014)"
+        ));
+        assert!(!is_transport_disconnect_error(
+            "FATAL: terminating connection due to administrator command"
+        ));
+    }
 }
