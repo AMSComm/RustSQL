@@ -102,11 +102,11 @@ pub async fn run_interactive_repl(
         tokio::sync::watch::channel((Arc::clone(&conn.client), Arc::clone(&conn.dialect)));
 
     let is_query_running = Arc::new(AtomicBool::new(false));
-    let keepalive_needed = Arc::new(AtomicBool::new(false));
+    let keepalive_enabled = Arc::new(AtomicBool::new(conn.config.keepalives));
     let mut session_tracker = SessionTracker::default();
 
-    // Application-level keepalive heartbeat: only active while session holds ephemeral state
-    // (temp tables or open transactions); otherwise allow idle disconnect and auto-reconnect.
+    // Application-level keepalive heartbeat (enabled by default; disable via --no-keepalive,
+    // PGKEEPALIVES=0, ?keepalives=0, or PGKEEPALIVE_QUERY_INTERVAL=0).
     let hb_interval_secs = std::env::var("PGKEEPALIVE_QUERY_INTERVAL")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
@@ -114,14 +114,14 @@ pub async fn run_interactive_repl(
     if hb_interval_secs > 0 {
         let hb_watch_rx = conn_watch_rx.clone();
         let hb_running = Arc::clone(&is_query_running);
-        let hb_needed = Arc::clone(&keepalive_needed);
+        let hb_enabled = Arc::clone(&keepalive_enabled);
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(hb_interval_secs));
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             interval.tick().await; // skip immediate first tick
             loop {
                 interval.tick().await;
-                if hb_running.load(Ordering::Relaxed) || !hb_needed.load(Ordering::Relaxed) {
+                if hb_running.load(Ordering::Relaxed) || !hb_enabled.load(Ordering::Relaxed) {
                     continue;
                 }
                 let client = {
@@ -153,7 +153,7 @@ pub async fn run_interactive_repl(
                         .read()
                         .map(|c| c.catalog_access_denied || c.loaded_schemas.contains(&schema_lower))
                         .unwrap_or(true);
-                    if !skip {
+                    if !skip && !client.is_closed() {
                         match fetch_schema_objects(&client, &*dialect, &schema, false).await {
                             Ok((tables, views, functions)) => {
                                 bg_completer.merge_schema_objects(&schema, tables, views, functions);
@@ -170,7 +170,7 @@ pub async fn run_interactive_repl(
                         .read()
                         .map(|c| c.catalog_access_denied || c.loaded_tables.contains(&table_lower))
                         .unwrap_or(true);
-                    if !skip {
+                    if !skip && !client.is_closed() {
                         match fetch_table_columns(&client, &*dialect, &table).await {
                             Ok(cols) => bg_completer.set_table_columns(&table, cols),
                             Err(true) => bg_completer.mark_catalog_access_denied(),
@@ -275,7 +275,7 @@ pub async fn run_interactive_repl(
                             Ok(true) => {
                                 if is_connect {
                                     session_tracker.on_reconnect();
-                                    keepalive_needed.store(false, Ordering::Relaxed);
+                                    keepalive_enabled.store(conn.config.keepalives, Ordering::Relaxed);
                                     let _ = conn_watch_tx.send((
                                         Arc::clone(&conn.client),
                                         Arc::clone(&conn.dialect),
@@ -335,7 +335,6 @@ pub async fn run_interactive_repl(
                     if outcome.succeeded {
                         session_tracker.on_query(&full_query);
                     }
-                    keepalive_needed.store(session_tracker.needs_keepalive(), Ordering::Relaxed);
 
                     let _ = conn_watch_tx.send((
                         Arc::clone(&conn.client),
@@ -748,21 +747,35 @@ async fn fetch_schema_objects(
         client.query(&fn_sql, &[]),
     );
 
+    let mut perm_denied_count = 0;
     let tables = match collect_schema_objects(res_tbl, include_unqualified) {
         Ok(v) => v,
-        Err(true) => return Err(true),
+        Err(true) => {
+            perm_denied_count += 1;
+            Vec::new()
+        }
         Err(false) => Vec::new(),
     };
     let views = match collect_schema_objects(res_view, include_unqualified) {
         Ok(v) => v,
-        Err(true) => return Err(true),
+        Err(true) => {
+            perm_denied_count += 1;
+            Vec::new()
+        }
         Err(false) => Vec::new(),
     };
     let functions = match collect_schema_objects(res_fn, include_unqualified) {
         Ok(v) => v,
-        Err(true) => return Err(true),
+        Err(true) => {
+            perm_denied_count += 1;
+            Vec::new()
+        }
         Err(false) => Vec::new(),
     };
+
+    if perm_denied_count == 3 {
+        return Err(true);
+    }
 
     Ok((tables, views, functions))
 }

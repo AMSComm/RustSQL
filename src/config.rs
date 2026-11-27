@@ -13,6 +13,7 @@ pub struct ConnectionConfig {
     pub dbname: String,
     pub password: Option<String>,
     pub ssl_mode: SslMode,
+    pub keepalives: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -143,6 +144,20 @@ impl ConnectionConfig {
             .or_else(|| env::var("PGSSLMODE").ok().map(|s| SslMode::parse_mode(&s)))
             .unwrap_or(SslMode::Prefer);
 
+        let keepalives = if cli.no_keepalive {
+            false
+        } else {
+            uri_parsed
+                .as_ref()
+                .and_then(|u| u.keepalives)
+                .or_else(|| {
+                    env::var("PGKEEPALIVES")
+                        .ok()
+                        .map(|v| v != "0" && !v.eq_ignore_ascii_case("false") && !v.eq_ignore_ascii_case("off"))
+                })
+                .unwrap_or(true)
+        };
+
         Ok(ConnectionConfig {
             host: default_host,
             port: default_port,
@@ -150,6 +165,7 @@ impl ConnectionConfig {
             dbname: default_dbname,
             password,
             ssl_mode,
+            keepalives,
         })
     }
 }
@@ -162,6 +178,7 @@ struct ParsedUri {
     password: Option<String>,
     dbname: Option<String>,
     ssl_mode: Option<SslMode>,
+    keepalives: Option<bool>,
 }
 
 fn parse_postgres_uri(uri_str: &str) -> Result<ParsedUri> {
@@ -209,11 +226,16 @@ fn parse_postgres_uri(uri_str: &str) -> Result<ParsedUri> {
     };
 
     let mut ssl_mode = None;
+    let mut keepalives = None;
     if let Some(q) = query {
         for param in q.split('&') {
             if let Some((k, v)) = param.split_once('=') {
                 if k.eq_ignore_ascii_case("sslmode") {
                     ssl_mode = Some(SslMode::parse_mode(v));
+                } else if k.eq_ignore_ascii_case("keepalives") {
+                    keepalives = Some(
+                        v != "0" && !v.eq_ignore_ascii_case("false") && !v.eq_ignore_ascii_case("off"),
+                    );
                 }
             }
         }
@@ -226,6 +248,7 @@ fn parse_postgres_uri(uri_str: &str) -> Result<ParsedUri> {
         password,
         dbname,
         ssl_mode,
+        keepalives,
     })
 }
 

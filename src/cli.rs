@@ -61,6 +61,10 @@ pub struct CliArgs {
     #[arg(long = "sslmode")]
     pub sslmode: Option<String>,
 
+    /// Disable TCP and session keepalive probes (or use PGKEEPALIVES=0 / ?keepalives=0)
+    #[arg(long = "no-keepalive")]
+    pub no_keepalive: bool,
+
     /// Output query results as CSV (requires -c/--command)
     #[arg(long = "csv", conflicts_with = "tsv")]
     pub csv: bool,

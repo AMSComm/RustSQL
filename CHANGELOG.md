@@ -5,6 +5,15 @@ All notable changes to **RustSQL (`ruql`)** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.0.8] - 2026-11-27
+
+### 🛠️ Keepalive Options & Autocomplete Fixes
+
+- **Default Keepalive with Standard Opt-Out**: Keepalive (TCP + 45s protocol heartbeat) is enabled by default; disable via `--no-keepalive`, `PGKEEPALIVES=0`, or `?keepalives=0` in the connection URI.
+- **`\d` Schema Lazy-Load & Partial Permission Resilience**: `\d` / `\dt` / `\dv` now lazy-load `<schema>.` on Tab, partial permission errors on one catalog view (e.g., functions) no longer discard tables/views/schemas, and closed clients no longer mark schemas as loaded.
+
+---
+
 ## [v0.0.7] - 2026-11-27
 
 ### 🛡️ Connection Stability & Smart Auto-Reconnect

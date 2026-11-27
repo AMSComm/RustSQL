@@ -292,9 +292,7 @@ impl DbConnection {
         }
 
         // Keepalive configuration to maintain stable connection across bastion hosts, SSH tunnels and NAT
-        let keepalives = std::env::var("PGKEEPALIVES")
-            .map(|v| v != "0")
-            .unwrap_or(true);
+        let keepalives = config.keepalives;
         pg_config.keepalives(keepalives);
 
         if keepalives {

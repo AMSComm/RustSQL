@@ -384,6 +384,9 @@ impl SqlCompleter {
                     (arg_start, filter_candidates(&schemas, arg_trimmed, true))
                 }
                 "\\d" | "\\d+" | "\\dt" | "\\dt+" | "\\dv" | "\\dv+" | "\\dm" | "\\dm+" | "\\di" | "\\di+" | "\\ds" | "\\ds+" | "\\dex" | "\\dep" | "\\dp" | "\\z" => {
+                    if let Some((schema, _)) = arg_trimmed.split_once('.') {
+                        self.ensure_schema_loaded(schema);
+                    }
                     let mut candidates = Vec::new();
                     if let Ok(c) = self.cache.read() {
                         candidates.extend(c.tables.clone());
