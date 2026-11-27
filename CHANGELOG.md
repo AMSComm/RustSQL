@@ -5,6 +5,15 @@ All notable changes to **RustSQL (`ruql`)** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.0.9] - 2026-11-27
+
+### ⚡ Instant Keystroke & Paste Prefetch
+
+- **Zero-Wait Keystroke & Paste Prefetch**: Typing `<schema>.` or completing a table name in `FROM` / `JOIN` / `UPDATE` / `INTO` (or pasting a full query) now immediately triggers non-blocking background prefetching without waiting for `Tab`, with in-flight deduplication (`pending_schemas` / `pending_tables`).
+- **Multiline Query Context**: Line-by-line multiline queries now share the accumulated `query_buffer` prefix with the completer so `WHERE` / `ON` / `ORDER BY` on subsequent lines automatically receive table and alias column suggestions.
+
+---
+
 ## [v0.0.8] - 2026-11-27
 
 ### 🛠️ Keepalive Options & Autocomplete Fixes

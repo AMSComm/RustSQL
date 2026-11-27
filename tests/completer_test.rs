@@ -223,4 +223,54 @@ fn test_table_and_alias_column_completion_in_where() {
     // ORDER BY completion
     let (_, matches) = completer.complete_input("SELECT * FROM orders ORDER BY ", 30);
     assert!(matches.iter().any(|m| m.display == "total_amount"));
+
+    // Multiline query_prefix support (line 1: FROM public.users, line 2: WHERE em)
+    completer.set_query_prefix("SELECT * FROM public.users");
+    let (start, matches) = completer.complete_input("WHERE em", 8);
+    assert_eq!(start, 6);
+    assert!(matches.iter().any(|m| m.display == "email"));
+    completer.set_query_prefix("");
+}
+
+#[test]
+fn test_keystroke_and_paste_prefetch() {
+    use rustsql::repl::completer::{LoadRequest, SchemaLoader};
+    use std::sync::{Arc, Condvar, Mutex};
+
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let completer = SqlCompleter::with_loader(SchemaLoader {
+        tx,
+        notify: Arc::new((Mutex::new(()), Condvar::new())),
+    });
+    completer.update_cache(
+        vec![],
+        vec!["public".to_string(), "analytics".to_string()],
+        vec![],
+        vec![],
+        vec![],
+    );
+
+    // 1. Typing `analytics.` triggers schema prefetch immediately without Tab
+    completer.prefetch_for_input("SELECT * FROM analytics.");
+    // Typing further does NOT duplicate the request while pending
+    completer.prefetch_for_input("SELECT * FROM analytics.ev");
+
+    match rx.try_recv().unwrap() {
+        LoadRequest::Schema(s) => assert_eq!(s, "analytics"),
+        other => panic!("Expected Schema(analytics), got {:?}", other),
+    }
+    assert!(rx.try_recv().is_err());
+
+    // 2. Pasting a full query triggers prefetch for all referenced tables
+    completer.prefetch_for_input(
+        "SELECT * FROM analytics.events e JOIN public.users u ON e.uid = u.id WHERE ",
+    );
+    let mut fetched_tables = Vec::new();
+    while let Ok(req) = rx.try_recv() {
+        if let LoadRequest::Table(t) = req {
+            fetched_tables.push(t);
+        }
+    }
+    assert!(fetched_tables.contains(&"analytics.events".to_string()));
+    assert!(fetched_tables.contains(&"public.users".to_string()));
 }

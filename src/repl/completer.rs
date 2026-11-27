@@ -15,6 +15,8 @@ pub struct CompletionCache {
     pub table_columns: HashMap<String, Vec<String>>,
     pub loaded_schemas: HashSet<String>,
     pub loaded_tables: HashSet<String>,
+    pub pending_schemas: HashSet<String>,
+    pub pending_tables: HashSet<String>,
     pub catalog_access_denied: bool,
 }
 
@@ -34,6 +36,7 @@ pub struct SchemaLoader {
 pub struct SqlCompleter {
     pub cache: Arc<RwLock<CompletionCache>>,
     pub loader: Option<SchemaLoader>,
+    pub query_prefix: Arc<RwLock<String>>,
 }
 
 pub const SQL_KEYWORDS: &[&str] = &[
@@ -122,6 +125,7 @@ impl SqlCompleter {
         Self {
             cache: Arc::new(RwLock::new(CompletionCache::default())),
             loader: None,
+            query_prefix: Arc::new(RwLock::new(String::new())),
         }
     }
 
@@ -129,6 +133,13 @@ impl SqlCompleter {
         Self {
             cache: Arc::new(RwLock::new(CompletionCache::default())),
             loader: Some(loader),
+            query_prefix: Arc::new(RwLock::new(String::new())),
+        }
+    }
+
+    pub fn set_query_prefix(&self, prefix: &str) {
+        if let Ok(mut qp) = self.query_prefix.write() {
+            *qp = prefix.to_string();
         }
     }
 
@@ -173,12 +184,15 @@ impl SqlCompleter {
             c.functions.dedup();
 
             c.loaded_schemas.insert(schema.to_lowercase());
+            c.pending_schemas.remove(&schema.to_lowercase());
         }
     }
 
     pub fn mark_schema_loaded(&self, schema: &str) {
         if let Ok(mut c) = self.cache.write() {
-            c.loaded_schemas.insert(schema.to_lowercase());
+            let key = schema.to_lowercase();
+            c.loaded_schemas.insert(key.clone());
+            c.pending_schemas.remove(&key);
         }
     }
 
@@ -194,13 +208,83 @@ impl SqlCompleter {
                     .or_insert_with(|| cols.clone());
             }
             c.table_columns.insert(key.clone(), cols);
-            c.loaded_tables.insert(key);
+            c.loaded_tables.insert(key.clone());
+            c.pending_tables.remove(&key);
         }
     }
 
     pub fn mark_table_loaded(&self, table: &str) {
         if let Ok(mut c) = self.cache.write() {
-            c.loaded_tables.insert(table.to_lowercase());
+            let key = table.to_lowercase();
+            c.loaded_tables.insert(key.clone());
+            c.pending_tables.remove(&key);
+        }
+    }
+
+    /// Non-blocking prefetch for schemas (`schema.`) and completed tables (`FROM tbl `, `JOIN tbl `)
+    /// triggered on every keystroke or paste.
+    pub fn prefetch_for_input(&self, line: &str) {
+        let Some(ref loader) = self.loader else {
+            return;
+        };
+
+        let full_input = {
+            let qp = self.query_prefix.read().map(|q| q.clone()).unwrap_or_default();
+            if qp.is_empty() {
+                line.to_string()
+            } else {
+                format!("{} {}", qp, line)
+            }
+        };
+
+        // 1. Prefetch any `schema.` qualifier typed or pasted outside quotes
+        for qualifier in extract_dot_qualifiers(&full_input) {
+            let q_lower = qualifier.to_lowercase();
+            let should_fetch = self
+                .cache
+                .write()
+                .map(|mut c| {
+                    if c.catalog_access_denied
+                        || c.loaded_schemas.contains(&q_lower)
+                        || c.pending_schemas.contains(&q_lower)
+                    {
+                        return false;
+                    }
+                    let is_known_schema = c.schemas.is_empty()
+                        || c.schemas.iter().any(|s| s.eq_ignore_ascii_case(&qualifier));
+                    if is_known_schema {
+                        c.pending_schemas.insert(q_lower);
+                        true
+                    } else {
+                        false
+                    }
+                })
+                .unwrap_or(false);
+            if should_fetch {
+                let _ = loader.tx.send(LoadRequest::Schema(qualifier));
+            }
+        }
+
+        // 2. Prefetch columns for completed table references in FROM / JOIN / UPDATE / INTO
+        for tbl in extract_completed_table_refs(&full_input, &self.cache) {
+            let t_lower = tbl.to_lowercase();
+            let should_fetch = self
+                .cache
+                .write()
+                .map(|mut c| {
+                    if c.catalog_access_denied
+                        || c.loaded_tables.contains(&t_lower)
+                        || c.pending_tables.contains(&t_lower)
+                    {
+                        return false;
+                    }
+                    c.pending_tables.insert(t_lower);
+                    true
+                })
+                .unwrap_or(false);
+            if should_fetch {
+                let _ = loader.tx.send(LoadRequest::Table(tbl));
+            }
         }
     }
 
@@ -465,7 +549,15 @@ impl SqlCompleter {
             .unwrap_or(0);
 
         let word = &prefix[word_start..];
-        let table_refs = extract_table_refs(prefix);
+        let full_sql_prefix = {
+            let qp = self.query_prefix.read().map(|q| q.clone()).unwrap_or_default();
+            if qp.is_empty() {
+                prefix.to_string()
+            } else {
+                format!("{} {}", qp, prefix)
+            }
+        };
+        let table_refs = extract_table_refs(&full_sql_prefix);
 
         // Case A: Dot-qualified completion (e.g. "u.col", "users.col", or "public.users")
         if let Some((qualifier, _obj_prefix)) = word.split_once('.') {
@@ -703,6 +795,75 @@ impl SqlCompleter {
 
         (word_start, matches)
     }
+}
+
+fn extract_dot_qualifiers(sql: &str) -> Vec<String> {
+    let mut qualifiers = Vec::new();
+    let mut in_quote = false;
+    let bytes = sql.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'\'' {
+            in_quote = !in_quote;
+            i += 1;
+            continue;
+        }
+        if !in_quote && bytes[i] == b'.' && i > 0 {
+            let mut start = i;
+            while start > 0 {
+                let b = bytes[start - 1];
+                if b.is_ascii_alphanumeric() || b == b'_' {
+                    start -= 1;
+                } else {
+                    break;
+                }
+            }
+            if start < i {
+                let q = &sql[start..i];
+                if !qualifiers.iter().any(|existing: &String| existing.eq_ignore_ascii_case(q)) {
+                    qualifiers.push(q.to_string());
+                }
+            }
+        }
+        i += 1;
+    }
+    qualifiers
+}
+
+fn extract_completed_table_refs(sql: &str, cache: &Arc<RwLock<CompletionCache>>) -> Vec<String> {
+    let refs = extract_table_refs(sql);
+    if refs.is_empty() {
+        return Vec::new();
+    }
+
+    let ended_mid_token = sql
+        .chars()
+        .last()
+        .is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '.');
+    let last_token = sql
+        .split(|c: char| c.is_whitespace() || c == ',' || c == '(' || c == ')' || c == ';')
+        .filter(|t| !t.is_empty())
+        .last()
+        .unwrap_or("")
+        .trim_matches('"');
+
+    let guard = cache.read().ok();
+    let mut result = Vec::new();
+    for (idx, (tbl, _)) in refs.iter().enumerate() {
+        let is_last = idx == refs.len() - 1;
+        if is_last && ended_mid_token && tbl.eq_ignore_ascii_case(last_token) {
+            // Still typing this table name: only prefetch if it's already a known table/view
+            let is_known = guard.as_ref().is_some_and(|c| {
+                c.tables.iter().any(|t| t.eq_ignore_ascii_case(tbl))
+                    || c.views.iter().any(|v| v.eq_ignore_ascii_case(tbl))
+            });
+            if !is_known {
+                continue;
+            }
+        }
+        result.push(tbl.clone());
+    }
+    result
 }
 
 fn extract_table_refs(sql: &str) -> Vec<(String, Option<String>)> {

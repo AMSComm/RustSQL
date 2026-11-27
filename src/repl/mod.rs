@@ -46,6 +46,7 @@ impl Completer for RsqlHelper {
 
 impl Highlighter for RsqlHelper {
     fn highlight<'l>(&self, line: &'l str, pos: usize) -> Cow<'l, str> {
+        self.completer.prefetch_for_input(line);
         self.highlighter.highlight(line, pos)
     }
 
@@ -317,6 +318,7 @@ pub async fn run_interactive_repl(
                 if query_buffer.ends_with(';') {
                     let full_query = query_buffer.trim().to_string();
                     query_buffer.clear();
+                    completer.set_query_prefix("");
                     state.last_query = full_query.clone();
 
                     is_query_running.store(true, Ordering::Relaxed);
@@ -340,12 +342,15 @@ pub async fn run_interactive_repl(
                         Arc::clone(&conn.client),
                         Arc::clone(&conn.dialect),
                     ));
+                } else {
+                    completer.set_query_prefix(&query_buffer);
                 }
             }
             Err(ReadlineError::Interrupted) => {
                 // Ctrl+C: Cancel current multi-line input
                 if !query_buffer.is_empty() {
                     query_buffer.clear();
+                    completer.set_query_prefix("");
                     println!("{}", "^C (query buffer cleared)".yellow());
                 } else {
                     println!("{}", "^C".yellow());
