@@ -230,6 +230,31 @@ fn test_table_and_alias_column_completion_in_where() {
     assert_eq!(start, 6);
     assert!(matches.iter().any(|m| m.display == "email"));
     completer.set_query_prefix("");
+
+    // SELECT completion when FROM is after the cursor
+    let sql = "SELECT  FROM public.users";
+    let (start, matches) = completer.complete_input(sql, 7);
+    assert_eq!(start, 7);
+    assert!(matches.iter().any(|m| m.display == "email"));
+    assert!(matches.iter().any(|m| m.display == "status"));
+
+    // SELECT after comma when FROM is after the cursor
+    let sql_comma = "SELECT id,  FROM public.users";
+    let (start, matches) = completer.complete_input(sql_comma, 11);
+    assert_eq!(start, 11);
+    assert!(matches.iter().any(|m| m.display == "email"));
+
+    // SELECT alias dot completion when FROM is after the cursor
+    let sql_alias = "SELECT u. FROM public.users u";
+    let (start, matches) = completer.complete_input(sql_alias, 9);
+    assert_eq!(start, 7);
+    assert!(matches.iter().any(|m| m.display == "u.email"));
+
+    // SELECT prefix completion when FROM is after the cursor
+    let sql_prefix = "SELECT em FROM public.users";
+    let (start, matches) = completer.complete_input(sql_prefix, 9);
+    assert_eq!(start, 7);
+    assert!(matches.iter().any(|m| m.display == "email"));
 }
 
 #[test]

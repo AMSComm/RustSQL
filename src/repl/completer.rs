@@ -447,7 +447,7 @@ impl SqlCompleter {
         }
 
         // 2. SQL query completion
-        self.complete_sql(prefix)
+        self.complete_sql(prefix, line)
     }
 
     fn complete_meta_command(&self, prefix: &str) -> (usize, Vec<Pair>) {
@@ -541,7 +541,7 @@ impl SqlCompleter {
         }
     }
 
-    fn complete_sql(&self, prefix: &str) -> (usize, Vec<Pair>) {
+    fn complete_sql(&self, prefix: &str, full_line: &str) -> (usize, Vec<Pair>) {
         // Find boundary of the current token being typed
         let word_start = prefix
             .rfind(|c: char| !c.is_alphanumeric() && c != '_' && c != '.')
@@ -549,15 +549,15 @@ impl SqlCompleter {
             .unwrap_or(0);
 
         let word = &prefix[word_start..];
-        let full_sql_prefix = {
+        let full_sql = {
             let qp = self.query_prefix.read().map(|q| q.clone()).unwrap_or_default();
             if qp.is_empty() {
-                prefix.to_string()
+                full_line.to_string()
             } else {
-                format!("{} {}", qp, prefix)
+                format!("{} {}", qp, full_line)
             }
         };
-        let table_refs = extract_table_refs(&full_sql_prefix);
+        let table_refs = extract_table_refs(&full_sql);
 
         // Case A: Dot-qualified completion (e.g. "u.col", "users.col", or "public.users")
         if let Some((qualifier, _obj_prefix)) = word.split_once('.') {
@@ -628,6 +628,35 @@ impl SqlCompleter {
             let mut words_rev = before_space.split_whitespace().rev();
             let prev_keyword = words_rev.next().unwrap_or("").to_uppercase();
             let prev_prev_keyword = words_rev.next().unwrap_or("").to_uppercase();
+
+            if before_space.ends_with(',') {
+                match last_clause_keyword(prefix).as_deref() {
+                    Some("SELECT") | Some("GROUP") | Some("ORDER") => {
+                        self.ensure_tables_loaded(&table_refs);
+                        let mut candidates = self.columns_for_tables(&table_refs);
+                        if last_clause_keyword(prefix).as_deref() == Some("SELECT") {
+                            if let Ok(c) = self.cache.read() {
+                                candidates.extend(c.functions.clone());
+                            }
+                        }
+                        candidates.sort();
+                        candidates.dedup();
+                        return (prefix.len(), filter_candidates(&candidates, "", true));
+                    }
+                    Some("FROM") | Some("JOIN") => {
+                        let mut candidates = Vec::new();
+                        if let Ok(c) = self.cache.read() {
+                            candidates.extend(c.tables.clone());
+                            candidates.extend(c.views.clone());
+                            candidates.extend(c.schemas.clone());
+                        }
+                        candidates.sort();
+                        candidates.dedup();
+                        return (prefix.len(), filter_candidates(&candidates, "", true));
+                    }
+                    _ => {}
+                }
+            }
 
             match prev_keyword.as_str() {
                 "FROM" | "JOIN" | "INTO" | "UPDATE" | "TABLE" => {
@@ -795,6 +824,24 @@ impl SqlCompleter {
 
         (word_start, matches)
     }
+}
+
+fn last_clause_keyword(sql_prefix: &str) -> Option<String> {
+    let clauses = [
+        "SELECT", "FROM", "WHERE", "JOIN", "GROUP", "ORDER", "HAVING", "SET", "INTO", "UPDATE",
+    ];
+    sql_prefix
+        .split(|c: char| c.is_whitespace() || c == ',' || c == '(' || c == ')' || c == ';')
+        .filter(|t| !t.is_empty())
+        .rev()
+        .find_map(|tok| {
+            let upper = tok.to_uppercase();
+            if clauses.contains(&upper.as_str()) {
+                Some(upper)
+            } else {
+                None
+            }
+        })
 }
 
 fn extract_dot_qualifiers(sql: &str) -> Vec<String> {
