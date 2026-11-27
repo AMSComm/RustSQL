@@ -1,5 +1,22 @@
 use super::QueryResult;
 use crate::error::Result;
+use unicode_width::UnicodeWidthStr;
+
+#[inline]
+fn display_width(s: &str) -> usize {
+    if s.is_ascii() {
+        s.len()
+    } else {
+        UnicodeWidthStr::width(s)
+    }
+}
+
+#[inline]
+fn push_chars(out: &mut String, ch: char, count: usize) {
+    for _ in 0..count {
+        out.push(ch);
+    }
+}
 
 pub fn format_table(result: &QueryResult, tuples_only: bool, border: u8) -> Result<String> {
     if result.columns.is_empty() {
@@ -37,13 +54,13 @@ pub fn format_table(result: &QueryResult, tuples_only: bool, border: u8) -> Resu
         }
     }
 
-    // Determine column widths
+    // Determine column display widths (accounting for multi-byte & wide CJK characters)
     let mut widths = Vec::with_capacity(num_cols);
     for (col_idx, col_name) in result.columns.iter().enumerate() {
-        let mut max_w = if tuples_only { 0 } else { col_name.len() };
+        let mut max_w = if tuples_only { 0 } else { display_width(col_name) };
         for row in &result.rows {
             if let Some(val) = row.get(col_idx) {
-                max_w = max_w.max(val.len());
+                max_w = max_w.max(display_width(val));
             }
         }
         widths.push(max_w);
@@ -71,15 +88,20 @@ pub fn format_table(result: &QueryResult, tuples_only: bool, border: u8) -> Resu
         }
         for (i, col_name) in result.columns.iter().enumerate() {
             let w = widths[i];
-            let formatted_col = if is_numeric[i] {
-                format!(" {:>width$} ", col_name, width = w)
+            let col_w = display_width(col_name);
+            let diff = w.saturating_sub(col_w);
+            out.push(' ');
+            if is_numeric[i] {
+                push_chars(&mut out, ' ', diff);
+                out.push_str(col_name);
             } else {
-                let diff = w.saturating_sub(col_name.len());
                 let left_pad = diff / 2;
                 let right_pad = diff - left_pad;
-                format!(" {}{}{} ", " ".repeat(left_pad), col_name, " ".repeat(right_pad))
-            };
-            out.push_str(&formatted_col);
+                push_chars(&mut out, ' ', left_pad);
+                out.push_str(col_name);
+                push_chars(&mut out, ' ', right_pad);
+            }
+            out.push(' ');
             if (border >= 1 && i + 1 < num_cols) || (border == 2 && i + 1 == num_cols) {
                 out.push('|');
             }
@@ -108,12 +130,16 @@ pub fn format_table(result: &QueryResult, tuples_only: bool, border: u8) -> Resu
         }
         for (i, &w) in widths.iter().enumerate() {
             let val = row.get(i).map(|s| s.as_str()).unwrap_or("");
-            let formatted = if is_numeric[i] {
-                format!(" {:>width$} ", val, width = w)
+            let pad = w.saturating_sub(display_width(val));
+            out.push(' ');
+            if is_numeric[i] {
+                push_chars(&mut out, ' ', pad);
+                out.push_str(val);
             } else {
-                format!(" {:<width$} ", val, width = w)
-            };
-            out.push_str(&formatted);
+                out.push_str(val);
+                push_chars(&mut out, ' ', pad);
+            }
+            out.push(' ');
             if ((border >= 1 || tuples_only) && i + 1 < num_cols)
                 || (border == 2 && !tuples_only && i + 1 == num_cols)
             {
@@ -153,10 +179,10 @@ pub fn estimate_table_width(result: &QueryResult, tuples_only: bool, border: u8)
     let num_cols = result.columns.len();
     let mut total_w = 0;
     for (col_idx, col_name) in result.columns.iter().enumerate() {
-        let mut max_w = if tuples_only { 0 } else { col_name.len() };
+        let mut max_w = if tuples_only { 0 } else { display_width(col_name) };
         for row in &result.rows {
             if let Some(val) = row.get(col_idx) {
-                max_w = max_w.max(val.len());
+                max_w = max_w.max(display_width(val));
             }
         }
         total_w += max_w;
@@ -165,5 +191,34 @@ pub fn estimate_table_width(result: &QueryResult, tuples_only: bool, border: u8)
     match border {
         0 => total_w + num_cols.saturating_sub(1),
         _ => total_w + 1 + (num_cols * 3),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_japanese_and_vietnamese_column_alignment() {
+        let result = QueryResult {
+            columns: vec!["id".to_string(), "name".to_string()],
+            rows: vec![
+                vec!["1".to_string(), "東京".to_string()],     // display width 4
+                vec!["2".to_string(), "Việt".to_string()],     // display width 4
+                vec!["3".to_string(), "abcdef".to_string()],   // display width 6
+            ],
+            command_tag: None,
+            rows_affected: None,
+            duration: std::time::Duration::from_millis(1),
+        };
+
+        let table = format_table(&result, false, 1).unwrap();
+        let lines: Vec<&str> = table.lines().collect();
+        // Header, separator, and all 3 data rows must have identical display width
+        let expected_w = display_width(lines[1]); // ----+--------
+        assert_eq!(display_width(lines[0]), expected_w);
+        assert_eq!(display_width(lines[2]), expected_w);
+        assert_eq!(display_width(lines[3]), expected_w);
+        assert_eq!(display_width(lines[4]), expected_w);
     }
 }
